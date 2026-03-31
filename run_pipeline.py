@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-Entry point: run from eece5554_final_project/.
-
-Runs mono-inertial once as a baseline, then stereo-inertial across all
-noise levels. Plots stereo ATE vs noise with mono as a threshold line.
+ORB-SLAM experiment runner.
 
 Usage:
-    python run_pipeline.py
+    python run_pipeline.py --config experiments/orbslam_blur.yaml
 """
 
-from src.config import SIGMAS, RESULTS_DIR, NOISY_BASE, GT_CSV, ORIG_DATASET
-from src.noise import generate_noisy_dataset
+import argparse
+import time
+import yaml
+
+from src.experiment import load_orbslam_config
+from src.noise import generate_noisy_dataset_euroc
+from src.config import GT_CSV
 from src.convert import convert_gt_to_tum
 from src.slam import run_stereo, run_mono
 from src.evaluate import evaluate
@@ -18,60 +20,111 @@ from src.plot import plot_results, print_summary
 
 
 def main():
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    NOISY_BASE.mkdir(parents=True, exist_ok=True)
+    parser = argparse.ArgumentParser(description="ORB-SLAM noise benchmark")
+    parser.add_argument("--config", required=True, help="Path to experiment YAML")
+    args = parser.parse_args()
 
-    # Convert ground truth once
-    gt_tum = RESULTS_DIR / "gt_room1.txt"
-    print("Converting ground truth...")
-    convert_gt_to_tum(GT_CSV, gt_tum)
+    cfg = load_orbslam_config(args.config)
 
-    # ── Step 1: Run mono baseline (once, on clean data) ──
-    print(f"\n{'='*50}")
-    print(f"  MONO BASELINE (clean data)")
-    print(f"{'='*50}")
+    print(f"Experiment : {cfg.name}")
+    print(f"Trajs      : {list(cfg.trajs.keys())}")
+    print(f"Conditions : {cfg.conditions}")
+    print(f"SLAM modes : {cfg.slam_modes}")
+    print(f"Results    : {cfg.results_dir}")
+    print()
 
-    mono_tag = "mono_baseline"
-    mono_dir = RESULTS_DIR / mono_tag
-    mono_dir.mkdir(parents=True, exist_ok=True)
+    cfg.results_dir.mkdir(parents=True, exist_ok=True)
 
-    run_mono(ORIG_DATASET, mono_tag, mono_dir)
-    mono_stats = evaluate(mono_dir, gt_tum, mono_tag)
+    # ── 1. Generate EuRoC-format datasets per (traj, condition) ──
+    print("=" * 60)
+    print("  GENERATING DATASETS")
+    print("=" * 60)
 
-    if mono_stats:
-        print(f"    Mono baseline ATE RMSE: {mono_stats['rmse']:.4f} m")
-    else:
-        print(f"    Mono baseline FAILED")
+    dataset_paths = {}  # (traj, condition) -> Path
+    for traj_name, traj_src in cfg.trajs.items():
+        for cond in cfg.conditions:
+            ds = generate_noisy_dataset_euroc(
+                condition=cond,
+                orig_dataset=traj_src,
+                out_base=cfg.euroc_out(traj_name),
+                seed=cfg.seed,
+            )
+            dataset_paths[(traj_name, cond)] = ds
 
-    # ── Step 2: Run stereo across noise levels ──
-    stereo_results = {}
+    # ── 2. Convert ground truth ──
+    gt_tum = cfg.results_dir / "gt.txt"
+    if not gt_tum.exists():
+        print("\nConverting ground truth...")
+        convert_gt_to_tum(GT_CSV, gt_tum)
 
-    print(f"\nRunning stereo-inertial across {len(SIGMAS)} noise levels")
-    print(f"Sigmas: {SIGMAS}\n")
+    # ── 3. Run SLAM + evaluate ──
+    print("\n" + "=" * 60)
+    print("  RUNNING SLAM")
+    print("=" * 60)
 
-    for sigma in SIGMAS:
-        print(f"\n{'='*50}")
-        print(f"  SIGMA = {sigma}")
-        print(f"{'='*50}")
+    all_results = {}
+    manifest = []
 
-        dataset_dir = generate_noisy_dataset(sigma)
+    for traj, cond, mode in cfg.run_combos():
+        tag = f"{traj}_{cond}_{mode}"
+        run_dir = cfg.run_dir(traj, cond, mode)
+        dataset_dir = dataset_paths[(traj, cond)]
 
-        tag = f"stereo_sigma{sigma}"
-        run_dir = RESULTS_DIR / tag
+        print(f"\n{'─'*50}")
+        print(f"  {tag}")
+        print(f"{'─'*50}")
+
+        # Skip if cached
+        stats_file = run_dir / "stats.yaml"
+        if stats_file.exists():
+            with open(stats_file) as f:
+                cached = yaml.safe_load(f)
+            all_results[(traj, cond, mode)] = cached
+            print(f"  Cached. RMSE={cached.get('rmse', 'N/A')}")
+            continue
+
         run_dir.mkdir(parents=True, exist_ok=True)
+        t0 = time.time()
 
-        run_stereo(dataset_dir, tag, run_dir)
+        if mode == "stereo":
+            run_stereo(dataset_dir, tag, run_dir)
+        elif mode == "mono":
+            run_mono(dataset_dir, tag, run_dir)
+
         stats = evaluate(run_dir, gt_tum, tag)
-        stereo_results[sigma] = stats
+        elapsed = time.time() - t0
 
+        entry = {"traj": traj, "condition": cond, "mode": mode, "elapsed_s": round(elapsed, 1)}
         if stats:
-            print(f"    ATE RMSE: {stats['rmse']:.4f} m")
+            entry.update(stats)
+            print(f"  ATE RMSE: {stats['rmse']:.4f} m  ({elapsed:.0f}s)")
         else:
-            print(f"    FAILED")
+            entry["status"] = "FAILED"
+            print(f"  FAILED ({elapsed:.0f}s)")
 
-    # ── Step 3: Report and plot ──
-    print_summary(stereo_results, mono_stats)
-    plot_results(stereo_results, mono_stats)
+        with open(stats_file, "w") as f:
+            yaml.dump(entry, f, default_flow_style=False)
+
+        all_results[(traj, cond, mode)] = entry
+        manifest.append(entry)
+
+    # ── 4. Manifest ──
+    manifest_path = cfg.results_dir / "manifest.yaml"
+    with open(manifest_path, "w") as f:
+        yaml.dump({
+            "experiment": cfg.name,
+            "seed": cfg.seed,
+            "conditions": cfg.conditions,
+            "slam_modes": cfg.slam_modes,
+            "runs": manifest,
+        }, f, default_flow_style=False)
+
+    # ── 5. Summary + plot ──
+    print_summary(all_results, cfg.results_dir)
+    plot_results(all_results, cfg.results_dir, experiment_name=cfg.name)
+
+    print(f"\nManifest: {manifest_path}")
+    print(f"Done.")
 
 
 if __name__ == "__main__":

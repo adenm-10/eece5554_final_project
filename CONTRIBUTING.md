@@ -71,7 +71,7 @@ name: experiment_tag
 seed: 42
 timeout: 600
 sequences:
-  room1: data/TUM_original/dataset-room1_512_16
+  traj1: data/TUM_original/dataset-traj1_512_16
 conditions:
   - clean
   - blur_ks7
@@ -124,7 +124,7 @@ data/ml_datasets/{name}/
 name: experiment_tag
 seed: 42
 sequences:
-  room1: data/TUM_original/dataset-room1_512_16
+  traj1: data/TUM_original/dataset-traj1_512_16
 conditions:
   - clean
   - blur_ks7

@@ -31,8 +31,8 @@ Use `opencv-python-headless` (not `opencv-python`) to avoid Qt plugin conflicts 
 ```bash
 mkdir -p data/TUM_original
 cd data/TUM_original
-wget https://vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-room1_512_16.tar
-tar xf dataset-room1_512_16.tar
+wget https://vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-traj1_512_16.tar
+tar xf dataset-traj1_512_16.tar
 cd ../..
 ```
 
@@ -97,7 +97,7 @@ All tunables are in `src/config.py`:
 | `SIGMAS` | `[0, 5, 10, 20, 40, 80]` | Noise standard deviations (pixel intensity, 0–255) |
 | `TIMEOUT` | `600` | Max seconds per ORB-SLAM3 run |
 | `SEED` | `42` | RNG seed for reproducible noise |
-| `ORIG_DATASET` | `data/TUM_original/dataset-room1_512_16` | Path to clean TUM-VI sequence |
+| `ORIG_DATASET` | `data/TUM_original/dataset-traj1_512_16` | Path to clean TUM-VI sequence |
 
 ## Notes
 
@@ -145,10 +145,10 @@ Available sequence types and their ground truth coverage:
 
 | Type | Sequences | Ground truth |
 |---|---|---|
-| room | room1–room6 (~1.3–1.6 GB) | Full trajectory |
+| traj | traj1–traj6 (~1.3–1.6 GB) | Full trajectory |
 | corridor | corridor1–corridor5 (~1–3.7 GB) | Start and end segments |
 | magistrale | magistrale1–magistrale6 (~5.4–9.6 GB) | Start and end segments |
 | outdoors | outdoors1–outdoors8 (~8.4–19 GB) | Start and end segments |
 | slides | slides1–slides3 (~2.9–4.2 GB) | Start and end segments |
 
-The **room** sequences are recommended for benchmarking since they have ground truth for the entire trajectory. Use 1024x1024 versions (swap `512_16` for `1024_16` in URLs) for higher resolution at ~3x the file size.
+The **traj** sequences are recommended for benchmarking since they have ground truth for the entire trajectory. Use 1024x1024 versions (swap `512_16` for `1024_16` in URLs) for higher resolution at ~3x the file size.
