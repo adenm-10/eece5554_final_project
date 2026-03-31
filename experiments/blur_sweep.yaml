@@ -1,0 +1,23 @@
+# experiments/orbslam_blur.yaml
+# Usage:  python run_pipeline.py --config experiments/orbslam_blur.yaml
+#
+# Condition keys are defined in src/noise.py DEGRADATIONS dict.
+# Same keys work in both orbslam and ml configs.
+
+name: orbslam_blur_v1
+
+seed: 42
+timeout: 600
+
+trajs:
+  traj1: data/TUM_original/dataset-room1_512_16
+
+conditions:
+  - clean
+  - blur_ks3
+  - blur_ks7
+  - blur_ks11
+
+slam_modes:
+  - stereo
+  - mono
