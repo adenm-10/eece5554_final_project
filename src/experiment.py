@@ -4,7 +4,7 @@ import yaml
 from pathlib import Path
 from dataclasses import dataclass, field
 from src.config import PROJECT_ROOT, RESULTS_DIR, SEED, TIMEOUT
-from src.noise import validate_conditions
+from src.noise import validate_conditions, build_degradations_from_config
 
 
 # ---------------------------------------------------------------------------
@@ -75,8 +75,11 @@ def load_orbslam_config(yaml_path: str | Path) -> OrbslamConfig:
         raw = yaml.safe_load(f)
 
     name = raw["name"]
-    trajs = _resolve_trajs(raw["trajs"])
-    conditions = raw["conditions"]
+    trajs = _resolve_trajs(raw.get("sequences", raw.get("trajs", {})))
+
+    conditions_cfg = raw["conditions"]
+    build_degradations_from_config(conditions_cfg)   # register callables from YAML params
+    conditions = list(conditions_cfg.keys())         # downstream code still gets a plain list
     validate_conditions(conditions)
 
     slam_modes = raw.get("slam_modes", ["stereo"])
@@ -108,8 +111,11 @@ def load_ml_config(yaml_path: str | Path) -> MLConfig:
         raw = yaml.safe_load(f)
 
     name = raw["name"]
-    trajs = _resolve_trajs(raw["trajs"])
-    conditions = raw["conditions"]
+    trajs = _resolve_trajs(raw.get("sequences", raw.get("trajs", {})))
+
+    conditions_cfg = raw["conditions"]
+    build_degradations_from_config(conditions_cfg)   # register callables from YAML params
+    conditions = list(conditions_cfg.keys())         # downstream code still gets a plain list
     validate_conditions(conditions)
 
     dataset_out_raw = raw.get("dataset_out", f"data/ml_datasets/{name}")

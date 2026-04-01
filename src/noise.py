@@ -19,8 +19,8 @@ def add_gaussian_noise(img, sigma, rng):
     return np.clip(img.astype(np.float64) + noise, 0, 255).astype(np.uint8)
 
 
-def apply_blur(img, kernel_size):
-    return cv2.GaussianBlur(img, (kernel_size, kernel_size), 0)
+def apply_blur(img, kernel_size, sigma=0):
+    return cv2.GaussianBlur(img, (kernel_size, kernel_size), sigma)
 
 
 def apply_occlusion(img, frac, rng):
@@ -37,35 +37,74 @@ def apply_occlusion(img, frac, rng):
     return out
 
 
-# ---------------------------------------------------------------------------
-# DEGRADATION REGISTRY (shared contract)
-#
-# Both pipelines reference these keys:
-#   - run_pipeline.py  (ORB-SLAM)  via generate_noisy_dataset_euroc()
-#   - run_ml.py        (ML)        via generate_ml_dataset()
-#
-# To add a new degradation: add one line here. Both pipelines pick it up
-# automatically and the same string key guarantees identical noise in both.
-#
-# Signature: (img: np.ndarray, rng: np.random.Generator) -> np.ndarray
-# "clean" maps to None (just copy the originals).
-# ---------------------------------------------------------------------------
-DEGRADATIONS = {
-    "clean":                   None,
-    # Gaussian blur
-    "blur_ks3":                lambda img, rng: apply_blur(img, 3),
-    "blur_ks7":                lambda img, rng: apply_blur(img, 7),
-    "blur_ks11":               lambda img, rng: apply_blur(img, 11),
-    # Additive Gaussian noise
-    "gauss_4sig":              lambda img, rng: add_gaussian_noise(img, 4, rng),
-    "gauss_8sig":              lambda img, rng: add_gaussian_noise(img, 8, rng),
-    "gauss_16sig":             lambda img, rng: add_gaussian_noise(img, 16, rng),
-    # Occlusion
-    "occlusion_progressive":   lambda img, rng: apply_occlusion(img, 0.25, rng),
-    # Combined
-    "blur_ks7_occlusion25":    lambda img, rng: apply_occlusion(apply_blur(img, 7), 0.25, rng),
-}
+DEGRADATIONS = {}
 
+# ---------------------------------------------------------------------------
+# Config-driven registry builder
+# ---------------------------------------------------------------------------
+
+# Supported type strings and their builder functions.
+# Each builder receives the raw param dict from YAML and returns a
+# (img, rng) -> img callable.
+
+_TYPE_BUILDERS: dict[str, callable] = {}
+
+
+def _register_type(type_name: str):
+    def decorator(fn):
+        _TYPE_BUILDERS[type_name] = fn
+        return fn
+    return decorator
+
+
+@_register_type("gaussian_blur")
+def _build_gaussian_blur(params: dict):
+    kernel_size = int(params["kernel_size"])
+    sigma = float(params.get("sigma", 0))
+    if kernel_size % 2 == 0:
+        raise ValueError(
+            f"gaussian_blur kernel_size must be odd, got {kernel_size}"
+        )
+    return lambda img, rng: apply_blur(img, kernel_size, sigma)
+
+
+@_register_type("gaussian_noise")
+def _build_gaussian_noise(params: dict):
+    sigma = float(params["sigma"])
+    return lambda img, rng: add_gaussian_noise(img, sigma, rng)
+
+
+@_register_type("occlusion")
+def _build_occlusion(params: dict):
+    frac = float(params["frac"])
+    return lambda img, rng: apply_occlusion(img, frac, rng)
+
+
+def build_degradations_from_config(conditions_cfg: dict) -> None:
+
+    for key, params in conditions_cfg.items():
+        if params is None or key == "clean":
+            DEGRADATIONS[key] = None
+            continue
+
+        deg_type = params.get("type")
+        if deg_type is None:
+            raise ValueError(
+                f"Condition '{key}' is missing a 'type' field. "
+                f"Available types: {list(_TYPE_BUILDERS)}"
+            )
+        if deg_type not in _TYPE_BUILDERS:
+            raise ValueError(
+                f"Unknown degradation type '{deg_type}' for condition '{key}'. "
+                f"Available types: {list(_TYPE_BUILDERS)}"
+            )
+
+        DEGRADATIONS[key] = _TYPE_BUILDERS[deg_type](params)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def list_degradations() -> list[str]:
     """Return all registered degradation keys (for CLI help / validation)."""
@@ -162,6 +201,7 @@ def generate_noisy_dataset_euroc(
             print(f"    [{i+1}/{len(images)}]")
 
     return out_dir
+
 
 # ---------------------------------------------------------------------------
 # ML dataset generation
