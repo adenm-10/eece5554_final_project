@@ -1,0 +1,276 @@
+"""
+Build dataset.csv and config.json for each degradation condition.
+
+Reads experiment YAMLs to get condition params, finds SLAM trajectories in
+results/, writes config.json + dataset.csv into the health_monitor_dataset.
+
+Usage:
+    python health_monitor/build_dataset_index.py \
+        --baseline clean \
+        --experiments new_blur1 degrade
+
+    --baseline    : name of experiment that holds the clean mono/stereo run
+                    (looks for results/<baseline>/traj1/clean/mono/traj_tum.txt)
+    --experiments : one or more experiment names whose degradation conditions
+                    should be included (looks for results/<exp>/traj1/<cond>/stereo/traj_tum.txt)
+    --dataset     : optional override for health_monitor_dataset root
+"""
+
+import argparse
+import json
+import yaml
+import numpy as np
+import pandas as pd
+from pathlib import Path
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+PROJECT_ROOT  = Path(__file__).resolve().parent.parent
+CAM0_DIR      = PROJECT_ROOT / "data" / "TUM_original" / "dataset-room1_512_16" / "mav0" / "cam0_eq" / "data"
+GT_CSV        = PROJECT_ROOT / "data" / "TUM_original" / "dataset-room1_512_16" / "mav0" / "mocap0" / "data.csv"
+RESULTS_ROOT  = PROJECT_ROOT / "results"
+EXPERIMENTS   = PROJECT_ROOT / "experiments"
+
+WINDOW_SIZE   = 20
+MAX_DIFF_NS   = 50_000_000   # 50 ms
+MIN_COVERAGE  = 0.75
+
+
+# ── YAML loader ───────────────────────────────────────────────────────────────
+
+def load_conditions_from_yaml(exp_name: str) -> dict:
+    """
+    Load conditions dict from experiments/<exp_name>.yaml.
+    Returns {condition_name: params_dict_or_None}.
+    Skips 'clean' — that is the baseline, not a degradation.
+    """
+    yaml_path = EXPERIMENTS / f"{exp_name}.yaml"
+    if not yaml_path.exists():
+        raise FileNotFoundError(f"Experiment YAML not found: {yaml_path}")
+
+    with open(yaml_path) as f:
+        raw = yaml.safe_load(f)
+
+    conditions_raw = raw.get("conditions", {})
+
+    # support both old list format and new dict format
+    if isinstance(conditions_raw, list):
+        # old format: conditions is a plain list of strings
+        return {c: None for c in conditions_raw if c != "clean"}
+    else:
+        # new format: conditions is a dict with params
+        return {k: v for k, v in conditions_raw.items() if k != "clean"}
+
+
+def params_to_config(params) -> dict:
+    """
+    Convert a YAML condition params dict to the config.json contract.
+    None or missing params means clean/no degradation.
+    Passes params through as-is — type strings come directly from the YAML.
+    """
+    if params is None:
+        return {"type": "none"}
+    return dict(params)   # shallow copy, preserves all fields
+
+
+# ── Trajectory I/O ────────────────────────────────────────────────────────────
+
+def load_tum_traj(path):
+    path = Path(path)
+    if not path.exists() or path.stat().st_size == 0:
+        return np.array([], dtype=np.int64), np.empty((0, 3))
+    data = np.loadtxt(path)
+    if data.ndim == 1:
+        data = data[np.newaxis, :]
+    return (data[:, 0] * 1e9).astype(np.int64), data[:, 1:4]
+
+
+def load_gt(path):
+    df  = pd.read_csv(path, comment="#", header=None)
+    ts  = df.iloc[:, 0].values.astype(np.int64)
+    pos = df.iloc[:, 1:4].values.astype(np.float64)
+    return ts, pos
+
+
+def nearest_match(query_ts, ref_ts):
+    indices  = np.searchsorted(ref_ts, query_ts)
+    indices  = np.clip(indices, 0, len(ref_ts) - 1)
+    left     = np.clip(indices - 1, 0, len(ref_ts) - 1)
+    use_left = np.abs(ref_ts[left] - query_ts) < np.abs(ref_ts[indices] - query_ts)
+    indices[use_left] = left[use_left]
+    valid = np.abs(ref_ts[indices] - query_ts) <= MAX_DIFF_NS
+    return indices, valid
+
+
+# ── RTE helpers ───────────────────────────────────────────────────────────────
+
+def global_scale(pos_est, pos_gt):
+    steps_est = np.linalg.norm(np.diff(pos_est, axis=0), axis=1)
+    steps_gt  = np.linalg.norm(np.diff(pos_gt,  axis=0), axis=1)
+    mask = steps_est > 1e-6
+    return float(np.median(steps_gt[mask] / steps_est[mask])) if mask.sum() >= 5 else 1.0
+
+
+def window_rte(pos_est, pos_gt):
+    errors = np.linalg.norm(np.diff(pos_est, axis=0) - np.diff(pos_gt, axis=0), axis=1)
+    return float(np.sqrt(np.mean(errors ** 2)))
+
+
+def make_failed_rows(cam_ts, mono_window_rtes):
+    rows = []
+    n_windows = len(cam_ts) // WINDOW_SIZE
+    for w in range(n_windows):
+        rte_m = mono_window_rtes.get(w)
+        rows.append({
+            "window_start_ts": int(cam_ts[w * WINDOW_SIZE]),
+            "rte_stereo":      float("inf"),
+            "rte_mono":        round(rte_m, 6) if rte_m is not None else float("nan"),
+            "severity":        1.0,
+        })
+    return rows
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def build_index(dataset_root: Path, baseline_name: str, experiment_names: list[str]):
+    mono_traj_path = RESULTS_ROOT / baseline_name / "traj1" / "clean" / "mono" / "traj_tum.txt"
+    if not mono_traj_path.exists():
+        raise FileNotFoundError(
+            f"Mono baseline not found: {mono_traj_path}\n"
+            f"Run: python run_pipeline.py --config experiments/clean.yaml"
+        )
+
+    # camera frames
+    cam_frames = sorted(CAM0_DIR.glob("*.png"))
+    if not cam_frames:
+        raise FileNotFoundError(f"No frames found in {CAM0_DIR}")
+    cam_ts   = np.array([int(f.stem) for f in cam_frames], dtype=np.int64)
+    n_frames = len(cam_ts)
+    print(f"Camera frames : {n_frames}")
+
+    # ground truth
+    gt_ts, gt_pos = load_gt(GT_CSV)
+    print(f"GT poses      : {len(gt_ts)}")
+
+    # mono baseline
+    mono_ts, mono_pos = load_tum_traj(mono_traj_path)
+    if len(mono_ts) == 0:
+        raise RuntimeError(f"Mono baseline trajectory is empty: {mono_traj_path}")
+    print(f"Mono traj     : {len(mono_ts)} poses")
+
+    # scale-correct mono
+    mono_idx, mono_valid = nearest_match(mono_ts, gt_ts)
+    scale = global_scale(mono_pos[mono_valid], gt_pos[mono_idx[mono_valid]]) \
+            if mono_valid.sum() > 10 else 1.0
+    mono_pos_scaled = mono_pos * scale
+    print(f"Mono scale    : {scale:.4f}\n")
+
+    # precompute per-window mono RTE once
+    n_windows = n_frames // WINDOW_SIZE
+    mono_window_rtes = {}
+    for w in range(n_windows):
+        win_ts = cam_ts[w * WINDOW_SIZE : (w + 1) * WINDOW_SIZE]
+        g_idx, g_valid = nearest_match(win_ts, gt_ts)
+        m_idx, m_valid = nearest_match(win_ts, mono_ts)
+        both = m_valid & g_valid
+        if both.sum() >= int(MIN_COVERAGE * WINDOW_SIZE):
+            mono_window_rtes[w] = window_rte(
+                mono_pos_scaled[m_idx[both]], gt_pos[g_idx[both]]
+            )
+        else:
+            mono_window_rtes[w] = None
+
+    # collect conditions from all experiment YAMLs
+    all_conditions = {}   # {cond_name: (config_dict, traj_path)}
+    for exp_name in experiment_names:
+        cond_params = load_conditions_from_yaml(exp_name)
+        for cond, params in cond_params.items():
+            traj_path = RESULTS_ROOT / exp_name / "traj1" / cond / "stereo" / "traj_tum.txt"
+            if not traj_path.exists():
+                print(f"[WARN] No trajectory for {exp_name}/{cond} — skipping")
+                continue
+            if cond in all_conditions:
+                print(f"[WARN] Condition '{cond}' appears in multiple experiments, "
+                      f"using first occurrence")
+                continue
+            all_conditions[cond] = (params_to_config(params), traj_path)
+
+    if not all_conditions:
+        print("No conditions found. Check --experiments and results/ folder.")
+        return
+
+    # process each condition
+    degrad_root = dataset_root / "sequence" / "traj1" / "degradations"
+    for cond, (cfg, traj_path) in sorted(all_conditions.items()):
+        print(f"[{cond}]")
+        cond_dir = degrad_root / cond
+        cond_dir.mkdir(parents=True, exist_ok=True)
+
+        # write config.json
+        with open(cond_dir / "config.json", "w") as f:
+            json.dump(cfg, f, indent=2)
+
+        # load stereo trajectory
+        stereo_ts, stereo_pos = load_tum_traj(traj_path)
+
+        if len(stereo_ts) == 0:
+            print(f"  SLAM failed — all windows severity=1.0, rte_stereo=inf")
+            rows = make_failed_rows(cam_ts, mono_window_rtes)
+        else:
+            print(f"  Stereo poses : {len(stereo_ts)}")
+            rows = []
+            for w in range(n_windows):
+                win_ts = cam_ts[w * WINDOW_SIZE : (w + 1) * WINDOW_SIZE]
+                s_idx, s_valid = nearest_match(win_ts, stereo_ts)
+                g_idx, g_valid = nearest_match(win_ts, gt_ts)
+                both   = s_valid & g_valid
+                rte_m  = mono_window_rtes[w]
+
+                if both.sum() / WINDOW_SIZE < MIN_COVERAGE:
+                    rows.append({
+                        "window_start_ts": int(win_ts[0]),
+                        "rte_stereo":      float("inf"),
+                        "rte_mono":        round(rte_m, 6) if rte_m else float("nan"),
+                        "severity":        1.0,
+                    })
+                    continue
+
+                rte_s = window_rte(stereo_pos[s_idx[both]], gt_pos[g_idx[both]])
+                if rte_m is None:
+                    severity = 1.0
+                else:
+                    denom    = rte_s + rte_m
+                    severity = float(np.clip(rte_s / denom, 0.0, 1.0)) if denom > 1e-9 else 0.0
+
+                rows.append({
+                    "window_start_ts": int(win_ts[0]),
+                    "rte_stereo":      round(rte_s, 6),
+                    "rte_mono":        round(rte_m, 6) if rte_m else float("nan"),
+                    "severity":        round(severity, 4),
+                })
+
+        df = pd.DataFrame(rows)
+        df.to_csv(cond_dir / "dataset.csv", index=False)
+        print(f"  Windows  : {len(rows)}  →  {cond_dir / 'dataset.csv'}")
+        sev = df["severity"]
+        print(f"  Severity   min={sev.min():.3f}  max={sev.max():.3f}  mean={sev.mean():.3f}")
+
+    print("\nDone.")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--baseline", required=True,
+                        help="Experiment name for the clean baseline "
+                             "(e.g. 'clean')")
+    parser.add_argument("--experiments", nargs="+", required=True,
+                        help="Experiment name(s) containing degradation conditions "
+                             "(e.g. 'new_blur1 degrade')")
+    parser.add_argument("--dataset", default=None,
+                        help="Path to health_monitor_dataset root "
+                             "(default: data/health_monitor_dataset)")
+    args = parser.parse_args()
+
+    dataset_root = Path(args.dataset) if args.dataset \
+                   else PROJECT_ROOT / "data" / "health_monitor_dataset"
+
+    build_index(dataset_root, args.baseline, args.experiments)
