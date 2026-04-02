@@ -22,6 +22,7 @@ import yaml
 import numpy as np
 import pandas as pd
 from pathlib import Path
+from abc import ABC, abstractmethod
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 PROJECT_ROOT  = Path(__file__).resolve().parent.parent
@@ -70,6 +71,86 @@ def params_to_config(params) -> dict:
     if params is None:
         return {"type": "none"}
     return dict(params)   # shallow copy, preserves all fields
+
+
+# ── Severity policies ─────────────────────────────────────────────────────────
+
+class SeverityPolicy(ABC):
+    """
+    Base class for severity scoring.
+
+    Subclasses receive rte_stereo and rte_mono for a single window and return
+    a severity in [0, 1].  SLAM failure (rte_stereo=inf) is handled by the
+    caller and always returns 1.0 — policies only need to handle finite values.
+
+    To add a new policy:
+      1. Subclass SeverityPolicy, implement compute().
+      2. Register it in SEVERITY_POLICIES below.
+      3. Pass --severity-policy <name> [--severity-params key=val ...] on the CLI.
+    """
+
+    @abstractmethod
+    def compute(self, rte_s: float, rte_m: float) -> float:
+        """Return severity in [0, 1] given finite stereo and mono RTE."""
+        ...
+
+    @classmethod
+    def from_config(cls, name: str, params: dict) -> "SeverityPolicy":
+        if name not in SEVERITY_POLICIES:
+            raise ValueError(
+                f"Unknown severity policy '{name}'. "
+                f"Available: {list(SEVERITY_POLICIES.keys())}"
+            )
+        return SEVERITY_POLICIES[name](**params)
+
+
+class RatioPolicy(SeverityPolicy):
+    """
+    severity = rte_s / (rte_s + rte_m)
+
+    Crossover at rte_s == rte_m → 0.5.
+    Simple and interpretable but has weak signal near crossover.
+    No parameters.
+    """
+
+    def compute(self, rte_s: float, rte_m: float) -> float:
+        denom = rte_s + rte_m
+        return float(np.clip(rte_s / denom, 0.0, 1.0)) if denom > 1e-9 else 0.0
+
+
+class LogRatioPolicy(SeverityPolicy):
+    """
+    severity = sigmoid(alpha * log(rte_s / rte_m))
+
+    Sequence-agnostic: the log-ratio cancels absolute scale so the metric
+    behaves consistently across indoor/outdoor/corridor sequences.
+
+    Crossover is at rte_s == rte_m (ratio=1, log=0) → sigmoid(0) = 0.5.
+    Post-crossover signal grows quickly because log is sensitive to
+    multiplicative changes.
+
+    Parameters
+    ----------
+    alpha : float (default 3.0)
+        Controls slope at the crossover.  Higher = sharper decision boundary.
+        alpha=3 means rte_s = 2*rte_m gives severity ≈ 0.90.
+    """
+
+    def __init__(self, alpha: float = 3.0):
+        self.alpha = alpha
+
+    def compute(self, rte_s: float, rte_m: float) -> float:
+        if rte_m < 1e-9:
+            return 1.0
+        log_ratio = np.log(rte_s / rte_m)
+        return float(1.0 / (1.0 + np.exp(-self.alpha * log_ratio)))
+
+
+# Registry — add new policies here
+SEVERITY_POLICIES: dict[str, type[SeverityPolicy]] = {
+    "ratio":     RatioPolicy,
+    "log_ratio": LogRatioPolicy,
+}
 
 
 # ── Trajectory I/O ────────────────────────────────────────────────────────────
@@ -124,7 +205,11 @@ def make_failed_rows(cam_ts, mono_window_rtes):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def build_index(dataset_root: Path, baseline_name: str, experiment_names: list[str]):
+def build_index(dataset_root: Path, baseline_name: str, experiment_names: list[str],
+                policy: SeverityPolicy | None = None):
+    if policy is None:
+        policy = RatioPolicy()
+
     mono_traj_path = RESULTS_ROOT / baseline_name / "traj1" / "clean" / "mono" / "traj_tum.txt"
     if not mono_traj_path.exists():
         raise FileNotFoundError(
@@ -225,8 +310,7 @@ def build_index(dataset_root: Path, baseline_name: str, experiment_names: list[s
                 if rte_m is None:
                     severity = 1.0
                 else:
-                    denom    = rte_s + rte_m
-                    severity = float(np.clip(rte_s / denom, 0.0, 1.0)) if denom > 1e-9 else 0.0
+                    severity = policy.compute(rte_s, rte_m)
 
                 rows.append({
                     "window_start_ts": int(win_ts[0]),
@@ -255,9 +339,27 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", default=None,
                         help="Path to health_monitor_dataset root "
                              "(default: data/health_monitor_dataset)")
+    parser.add_argument("--severity-policy", default="ratio",
+                        choices=list(SEVERITY_POLICIES.keys()),
+                        help="Severity scoring policy (default: ratio)")
+    parser.add_argument("--severity-params", nargs="*", default=[],
+                        metavar="KEY=VALUE",
+                        help="Policy hyperparameters, e.g. alpha=3.0")
     args = parser.parse_args()
+
+    # parse KEY=VALUE pairs into a typed dict
+    severity_params = {}
+    for kv in args.severity_params:
+        k, _, v = kv.partition("=")
+        try:
+            severity_params[k] = float(v)
+        except ValueError:
+            severity_params[k] = v
+
+    policy = SeverityPolicy.from_config(args.severity_policy, severity_params)
+    print(f"Severity policy : {args.severity_policy}  params={severity_params or '{}'}")
 
     dataset_root = Path(args.dataset) if args.dataset \
                    else PROJECT_ROOT / "data" / "health_monitor_dataset"
 
-    build_index(dataset_root, args.baseline, args.experiments)
+    build_index(dataset_root, args.baseline, args.experiments, policy=policy)
