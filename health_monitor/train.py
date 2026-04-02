@@ -26,10 +26,9 @@ matplotlib.use("Agg")   # non-GUI backend — saves to file instead of displayin
 import matplotlib.pyplot as plt
 
 from stereo_health_dataset import StereoHealthDataset
+from config import DATASET_ROOT, CHECKPOINT_DIR, SEED
 
 # ── Config ────────────────────────────────────────────────────────────────────
-DATASET_ROOT   = Path(__file__).resolve().parent.parent / "data" / "health_monitor_dataset"
-CHECKPOINT_DIR = Path("checkpoints")
 CHECKPOINT_DIR.mkdir(exist_ok=True)
 
 BATCH_SIZE    = 16
@@ -38,7 +37,6 @@ LR_BACKBONE   = 1e-5
 LR_REST       = 1e-3
 VAL_SPLIT     = 0.2
 CROSSOVER_THR = 0.5
-SEED          = 42
 DEVICE        = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 QUICK_SAMPLES = 100

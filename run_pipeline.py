@@ -42,6 +42,18 @@ def main():
 
     dataset_paths = {}  # (traj, condition) -> Path
     for traj_name, traj_src in cfg.trajs.items():
+
+        # write traj-level metadata once per traj
+        traj_meta_path = cfg.results_dir / traj_name / "metadata.yaml"
+        if not traj_meta_path.exists():
+            traj_meta_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(traj_meta_path, "w") as f:
+                yaml.dump({
+                    "traj":          traj_name,
+                    "experiment":    cfg.name,
+                    "sequence_path": str(traj_src),
+                }, f, default_flow_style=False)
+
         for cond in cfg.conditions:
             ds = generate_noisy_dataset_euroc(
                 condition=cond,
@@ -104,6 +116,16 @@ def main():
 
         with open(stats_file, "w") as f:
             yaml.dump(entry, f, default_flow_style=False)
+
+        # write per-run metadata snapshot
+        with open(run_dir / "metadata.yaml", "w") as f:
+            yaml.dump({
+                "traj":             traj,
+                "condition":        cond,
+                "mode":             mode,
+                "experiment":       cfg.name,
+                "condition_params": cfg.conditions_cfg.get(cond),
+            }, f, default_flow_style=False)
 
         all_results[(traj, cond, mode)] = entry
         manifest.append(entry)

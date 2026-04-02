@@ -1,10 +1,10 @@
 """
 StereoHealthDataset — path-based, degradation on-the-fly.
 
-Reads dataset.csv files from health_monitor_dataset/sequence/traj1/degradations/.
+Discovers all trajs and conditions under health_monitor_dataset/sequence/.
 For each 20-frame window:
-  - cam0: clean frames loaded from TUM_original/cam0
-  - cam1: frames loaded from TUM_original/cam1, degradation applied from config.json
+  - cam0: clean frames from cam0_eq_dir (resolved from sequence/<traj>/meta.json)
+  - cam1: frames from cam1_eq_dir, degradation applied from config.json
   - severity: precomputed RTE-based score from dataset.csv
 
 Returns:
@@ -16,19 +16,15 @@ Returns:
 import json
 import cv2
 import numpy as np
+import pandas as pd
 import torch
 from pathlib import Path
 from torch.utils.data import Dataset
 
-# ── Config ────────────────────────────────────────────────────────────────────
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATASET_ROOT = PROJECT_ROOT / "data" / "health_monitor_dataset"
-CAM0_DIR     = PROJECT_ROOT / "data" / "TUM_original" / "dataset-room1_512_16" / "mav0" / "cam0" / "data"
-CAM1_DIR     = PROJECT_ROOT / "data" / "TUM_original" / "dataset-room1_512_16" / "mav0" / "cam1" / "data"
-IMG_SIZE     = (224, 224)
-WINDOW_SIZE  = 20
+from config import DATASET_ROOT, WINDOW_SIZE, IMG_SIZE
 
-# ── Degradation functions (must match src/noise.py behaviour) ─────────────────
+
+# ── Degradation functions ─────────────────────────────────────────────────────
 
 def _apply_occlusion(img, frac):
     h, w = img.shape[:2]
@@ -44,11 +40,7 @@ def _apply_occlusion(img, frac):
 
 
 def _apply_config(img, config):
-    """
-    Apply degradation described by config dict to a grayscale uint8 image.
-    Type strings match src/noise.py: 'gaussian_blur', 'gaussian_noise', 'occlusion'.
-    'none' or missing type means no degradation.
-    """
+    """Apply degradation from config.json to a grayscale uint8 image."""
     t = config.get("type", "none")
 
     if t in ("none", "clean"):
@@ -56,10 +48,9 @@ def _apply_config(img, config):
 
     if t == "gaussian_blur":
         ks = int(config["kernel_size"])
-        sigma = float(config.get("sigma", 0))
         if ks % 2 == 0:
             ks += 1
-        return cv2.GaussianBlur(img, (ks, ks), sigma)
+        return cv2.GaussianBlur(img, (ks, ks), float(config.get("sigma", 0)))
 
     if t == "gaussian_noise":
         sigma = float(config["sigma"])
@@ -73,7 +64,6 @@ def _apply_config(img, config):
 
 
 def _load_image(path):
-    """Load grayscale PNG, resize to IMG_SIZE, normalise to [0,1]."""
     img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise FileNotFoundError(f"Cannot load image: {path}")
@@ -84,83 +74,113 @@ def _load_image(path):
 
 class StereoHealthDataset(Dataset):
     """
+    Discovers all trajs and conditions from health_monitor_dataset/sequence/*/
+
+    Each traj must have:
+      sequence/<traj>/meta.json          — cam0_eq_dir, cam1_eq_dir
+      sequence/<traj>/degradations/<cond>/config.json
+      sequence/<traj>/degradations/<cond>/dataset.csv
+
     Args:
         dataset_root : Path to health_monitor_dataset/
-        cam0_dir     : Path to clean cam0/data/
-        cam1_dir     : Path to clean cam1/data/
         conditions   : list of condition names to include (None = all)
-        seed         : RNG seed for stochastic degradations (occlusion, noise)
+        seed         : RNG seed for stochastic degradations
     """
 
-    def __init__(self, dataset_root=DATASET_ROOT, cam0_dir=CAM0_DIR,
-                 cam1_dir=CAM1_DIR, conditions=None, seed=42):
-        self.cam0_dir = Path(cam0_dir)
-        self.cam1_dir = Path(cam1_dir)
-        self.rng      = np.random.default_rng(seed)
+    def __init__(self, dataset_root=DATASET_ROOT, conditions=None, seed=42):
+        dataset_root = Path(dataset_root)
+        self.rng     = np.random.default_rng(seed)
 
-        # sorted frame lists (timestamp → path)
-        self.cam0_frames = sorted(self.cam0_dir.glob("*.png"))
-        self.cam1_frames = sorted(self.cam1_dir.glob("*.png"))
-        self._cam0_ts    = {int(f.stem): f for f in self.cam0_frames}
-        self._cam1_ts    = {int(f.stem): f for f in self.cam1_frames}
-        self._sorted_ts  = sorted(self._cam0_ts.keys())
+        # {traj: {ts: Path}} for cam0 and cam1 — populated per traj from meta.json
+        self._cam0_by_traj: dict[str, dict[int, Path]] = {}
+        self._cam1_by_traj: dict[str, dict[int, Path]] = {}
+        self._sorted_ts_by_traj: dict[str, list[int]]  = {}
 
-        degrad_root = Path(dataset_root) / "sequence" / "traj1" / "degradations"
+        # flat list of (start_ts, severity, config, traj)
+        self.windows: list[tuple] = []
 
-        self.windows = []   # list of (start_ts, severity, config_dict, cond_name)
+        seq_root = dataset_root / "sequence"
+        if not seq_root.exists():
+            raise FileNotFoundError(
+                f"No sequence directory found at {seq_root}\n"
+                f"Run build_dataset_index.py first."
+            )
 
-        import pandas as pd
-        for cond_dir in sorted(degrad_root.iterdir()):
-            if conditions and cond_dir.name not in conditions:
-                continue
-            csv_path    = cond_dir / "dataset.csv"
-            config_path = cond_dir / "config.json"
-            if not csv_path.exists() or not config_path.exists():
+        for traj_dir in sorted(seq_root.iterdir()):
+            if not traj_dir.is_dir():
                 continue
 
-            with open(config_path) as f:
-                cfg = json.load(f)
+            meta_path = traj_dir / "meta.json"
+            if not meta_path.exists():
+                continue
 
-            df = pd.read_csv(csv_path)
-            for _, row in df.iterrows():
-                self.windows.append((
-                    int(row["window_start_ts"]),
-                    float(row["severity"]),
-                    cfg,
-                    cond_dir.name,
-                ))
+            with open(meta_path) as f:
+                meta = json.load(f)
+
+            traj         = traj_dir.name
+            cam0_eq_dir  = Path(meta["cam0_eq_dir"])
+            cam1_eq_dir  = Path(meta["cam1_eq_dir"])
+
+            cam0_map = {int(f.stem): f for f in sorted(cam0_eq_dir.glob("*.png"))}
+            cam1_map = {int(f.stem): f for f in sorted(cam1_eq_dir.glob("*.png"))}
+
+            self._cam0_by_traj[traj]     = cam0_map
+            self._cam1_by_traj[traj]     = cam1_map
+            self._sorted_ts_by_traj[traj] = sorted(cam0_map.keys())
+
+            degrad_root = traj_dir / "degradations"
+            if not degrad_root.exists():
+                continue
+
+            for cond_dir in sorted(degrad_root.iterdir()):
+                if not cond_dir.is_dir():
+                    continue
+                if conditions and cond_dir.name not in conditions:
+                    continue
+
+                csv_path    = cond_dir / "dataset.csv"
+                config_path = cond_dir / "config.json"
+                if not csv_path.exists() or not config_path.exists():
+                    continue
+
+                with open(config_path) as f:
+                    cfg = json.load(f)
+
+                df = pd.read_csv(csv_path)
+                for _, row in df.iterrows():
+                    self.windows.append((
+                        int(row["window_start_ts"]),
+                        float(row["severity"]),
+                        cfg,
+                        traj,
+                    ))
 
         if not self.windows:
             raise RuntimeError(
                 f"No windows loaded. Run build_dataset_index.py first.\n"
-                f"Looked in: {degrad_root}"
+                f"Looked in: {seq_root}"
             )
 
     def __len__(self):
         return len(self.windows)
 
     def __getitem__(self, idx):
-        start_ts, severity, cfg, _ = self.windows[idx]
+        start_ts, severity, cfg, traj = self.windows[idx]
 
-        # find start index in sorted timestamp list
-        try:
-            start_idx = self._sorted_ts.index(start_ts)
-        except ValueError:
-            # nearest match fallback
-            arr = np.array(self._sorted_ts)
-            start_idx = int(np.argmin(np.abs(arr - start_ts)))
+        sorted_ts = self._sorted_ts_by_traj[traj]
+        cam0_map  = self._cam0_by_traj[traj]
+        cam1_map  = self._cam1_by_traj[traj]
 
-        end_idx = min(start_idx + WINDOW_SIZE, len(self._sorted_ts))
-        frame_ts = self._sorted_ts[start_idx:end_idx]
+        # find start index
+        arr       = np.array(sorted_ts)
+        start_idx = int(np.argmin(np.abs(arr - start_ts)))
+        frame_ts  = sorted_ts[start_idx : start_idx + WINDOW_SIZE]
 
-        cam0_imgs = []
-        cam1_imgs = []
-
+        cam0_imgs, cam1_imgs = [], []
         for ts in frame_ts:
-            img0 = _load_image(self._cam0_ts[ts])
-            img1 = _load_image(self._cam1_ts[ts])
+            img0 = _load_image(cam0_map[ts])
+            img1 = _load_image(cam1_map[ts])
             img1 = _apply_config(img1, cfg)
-
             cam0_imgs.append(img0.astype(np.float32) / 255.0)
             cam1_imgs.append(img1.astype(np.float32) / 255.0)
 

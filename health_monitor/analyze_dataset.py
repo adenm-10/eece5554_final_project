@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from config import DATASET_ROOT
 
 SEVERITY_BINS = [
     (0.0,  0.25, "healthy     "),
@@ -23,57 +23,65 @@ SEVERITY_BINS = [
 
 
 def analyze(dataset_root: Path):
-    degrad_root = dataset_root / "sequence" / "traj1" / "degradations"
-    if not degrad_root.exists():
-        raise FileNotFoundError(f"No degradations found at {degrad_root}")
+    seq_root = dataset_root / "sequence"
+    if not seq_root.exists():
+        raise FileNotFoundError(f"No sequence directory found at {seq_root}")
 
-    cond_dirs = sorted(d for d in degrad_root.iterdir() if d.is_dir())
-    all_data = []
+    # collect all (traj, condition, csv_path) tuples across all trajs
+    all_data   = []   # list of {"traj": ..., "condition": ..., "severity": Series}
+    csv_by_key = {}   # (traj, cond) -> csv_path (for n_inf computation in summary)
 
-    print(f"\n{'Condition':<28} {'Windows':>7} {'Failed':>7} {'Mean sev':>9} "
+    print(f"\n{'Traj/Condition':<36} {'Windows':>7} {'Failed':>7} {'Mean sev':>9} "
           f"{'<0.25':>7} {'0.25-0.5':>9} {'0.5-0.75':>9} {'>0.75':>7} {'=1.0':>6}")
-    print("─" * 100)
+    print("─" * 108)
 
-    for cond_dir in cond_dirs:
-        csv_path = cond_dir / "dataset.csv"
-        if not csv_path.exists():
-            print(f"  {cond_dir.name:<26}  no dataset.csv — run build_dataset_index.py")
+    for traj_dir in sorted(seq_root.iterdir()):
+        if not traj_dir.is_dir():
+            continue
+        degrad_root = traj_dir / "degradations"
+        if not degrad_root.exists():
             continue
 
-        df  = pd.read_csv(csv_path)
-        sev = df["severity"]
-        n   = len(sev)
+        for cond_dir in sorted(degrad_root.iterdir()):
+            if not cond_dir.is_dir():
+                continue
+            csv_path = cond_dir / "dataset.csv"
+            if not csv_path.exists():
+                print(f"  {traj_dir.name}/{cond_dir.name:<24}  no dataset.csv — run build_dataset_index.py")
+                continue
 
-        n_failed = (sev == 1.0).sum()
-        n_inf    = np.isinf(df["rte_stereo"]).sum()
+            df  = pd.read_csv(csv_path)
+            sev = df["severity"]
+            n   = len(sev)
+            n_inf = np.isinf(df["rte_stereo"]).sum()
 
-        counts = []
-        for lo, hi, _ in SEVERITY_BINS:
-            if hi > 1.0:
-                counts.append((sev == 1.0).sum())
-            else:
-                counts.append(((sev >= lo) & (sev < hi)).sum())
+            counts = []
+            for lo, hi, _ in SEVERITY_BINS:
+                if hi > 1.0:
+                    counts.append((sev == 1.0).sum())
+                else:
+                    counts.append(((sev >= lo) & (sev < hi)).sum())
 
-        print(f"  {cond_dir.name:<26}  {n:>6}  {n_inf:>6}  {sev.mean():>8.3f}  "
-              f"{counts[0]:>6}  {counts[1]:>8}  {counts[2]:>8}  {counts[3]:>6}  {counts[4]:>5}")
+            label = f"{traj_dir.name}/{cond_dir.name}"
+            print(f"  {label:<34}  {n:>6}  {n_inf:>6}  {sev.mean():>8.3f}  "
+                  f"{counts[0]:>6}  {counts[1]:>8}  {counts[2]:>8}  {counts[3]:>6}  {counts[4]:>5}")
 
-        all_data.append({"condition": cond_dir.name, "severity": sev})
+            all_data.append({"traj": traj_dir.name, "condition": cond_dir.name, "severity": sev})
+            csv_by_key[(traj_dir.name, cond_dir.name)] = csv_path
 
-    # overall histogram across all conditions
+    # overall summary
     if all_data:
         combined = pd.concat([d["severity"] for d in all_data], ignore_index=True)
-        print("─" * 100)
+        print("─" * 108)
         n = len(combined)
-        n_inf = sum(np.isinf(pd.read_csv(
-            degrad_root / d["condition"] / "dataset.csv")["rte_stereo"]).sum()
-            for d in all_data)
+        n_inf = sum(np.isinf(pd.read_csv(p)["rte_stereo"]).sum() for p in csv_by_key.values())
         counts = []
         for lo, hi, _ in SEVERITY_BINS:
             if hi > 1.0:
                 counts.append((combined == 1.0).sum())
             else:
                 counts.append(((combined >= lo) & (combined < hi)).sum())
-        print(f"  {'ALL':<26}  {n:>6}  {n_inf:>6}  {combined.mean():>8.3f}  "
+        print(f"  {'ALL':<34}  {n:>6}  {n_inf:>6}  {combined.mean():>8.3f}  "
               f"{counts[0]:>6}  {counts[1]:>8}  {counts[2]:>8}  {counts[3]:>6}  {counts[4]:>5}")
 
         print(f"\nSeverity breakdown (all conditions, n={n}):")
@@ -91,7 +99,6 @@ if __name__ == "__main__":
                              "(default: data/health_monitor_dataset)")
     args = parser.parse_args()
 
-    dataset_root = Path(args.dataset) if args.dataset \
-                   else PROJECT_ROOT / "data" / "health_monitor_dataset"
+    dataset_root = Path(args.dataset) if args.dataset else DATASET_ROOT
 
     analyze(dataset_root)

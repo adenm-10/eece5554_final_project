@@ -18,6 +18,7 @@ class OrbslamConfig:
     timeout: int
     trajs: dict[str, Path]
     conditions: list[str]
+    conditions_cfg: dict        # full params dict {cond: params_or_None}
     slam_modes: list[str]
     results_dir: Path
     dataset_out: Path
@@ -99,6 +100,7 @@ def load_orbslam_config(yaml_path: str | Path) -> OrbslamConfig:
         timeout=raw.get("timeout", TIMEOUT),
         trajs=trajs,
         conditions=conditions,
+        conditions_cfg=conditions_cfg,
         slam_modes=slam_modes,
         results_dir=RESULTS_DIR / name,
         dataset_out=dataset_out,
