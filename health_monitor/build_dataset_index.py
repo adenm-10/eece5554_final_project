@@ -26,7 +26,7 @@ from abc import ABC, abstractmethod
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 PROJECT_ROOT  = Path(__file__).resolve().parent.parent
-CAM0_DIR      = PROJECT_ROOT / "data" / "TUM_original" / "dataset-room1_512_16" / "mav0" / "cam0_eq" / "data"
+CAM0_DIR      = PROJECT_ROOT / "data" / "TUM_original" / "dataset-room1_512_16" / "mav0" / "cam0" / "data"
 GT_CSV        = PROJECT_ROOT / "data" / "TUM_original" / "dataset-room1_512_16" / "mav0" / "mocap0" / "data.csv"
 RESULTS_ROOT  = PROJECT_ROOT / "results"
 EXPERIMENTS   = PROJECT_ROOT / "experiments"

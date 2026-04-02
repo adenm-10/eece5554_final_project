@@ -3,8 +3,8 @@ StereoHealthDataset — path-based, degradation on-the-fly.
 
 Reads dataset.csv files from health_monitor_dataset/sequence/traj1/degradations/.
 For each 20-frame window:
-  - cam0: clean frames loaded from TUM_original/cam0_eq
-  - cam1: frames loaded from TUM_original/cam1_eq, degradation applied from config.json
+  - cam0: clean frames loaded from TUM_original/cam0
+  - cam1: frames loaded from TUM_original/cam1, degradation applied from config.json
   - severity: precomputed RTE-based score from dataset.csv
 
 Returns:
@@ -23,8 +23,8 @@ from torch.utils.data import Dataset
 # ── Config ────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATASET_ROOT = PROJECT_ROOT / "data" / "health_monitor_dataset"
-CAM0_DIR     = PROJECT_ROOT / "data" / "TUM_original" / "dataset-room1_512_16" / "mav0" / "cam0_eq" / "data"
-CAM1_DIR     = PROJECT_ROOT / "data" / "TUM_original" / "dataset-room1_512_16" / "mav0" / "cam1_eq" / "data"
+CAM0_DIR     = PROJECT_ROOT / "data" / "TUM_original" / "dataset-room1_512_16" / "mav0" / "cam0" / "data"
+CAM1_DIR     = PROJECT_ROOT / "data" / "TUM_original" / "dataset-room1_512_16" / "mav0" / "cam1" / "data"
 IMG_SIZE     = (224, 224)
 WINDOW_SIZE  = 20
 
@@ -86,8 +86,8 @@ class StereoHealthDataset(Dataset):
     """
     Args:
         dataset_root : Path to health_monitor_dataset/
-        cam0_dir     : Path to clean cam0_eq/data/
-        cam1_dir     : Path to clean cam1_eq/data/
+        cam0_dir     : Path to clean cam0/data/
+        cam1_dir     : Path to clean cam1/data/
         conditions   : list of condition names to include (None = all)
         seed         : RNG seed for stochastic degradations (occlusion, noise)
     """
