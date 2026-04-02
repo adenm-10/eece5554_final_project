@@ -31,7 +31,7 @@ RESULTS_ROOT  = PROJECT_ROOT / "results"
 EXPERIMENTS   = PROJECT_ROOT / "experiments"
 
 WINDOW_SIZE   = 20
-MAX_DIFF_NS   = 50_000_000   # 50 ms
+MAX_DIFF_NS   = 10_000_000   # 10 ms
 MIN_COVERAGE  = 0.75
 
 
@@ -103,13 +103,6 @@ def nearest_match(query_ts, ref_ts):
 
 # ── RTE helpers ───────────────────────────────────────────────────────────────
 
-def global_scale(pos_est, pos_gt):
-    steps_est = np.linalg.norm(np.diff(pos_est, axis=0), axis=1)
-    steps_gt  = np.linalg.norm(np.diff(pos_gt,  axis=0), axis=1)
-    mask = steps_est > 1e-6
-    return float(np.median(steps_gt[mask] / steps_est[mask])) if mask.sum() >= 5 else 1.0
-
-
 def window_rte(pos_est, pos_gt):
     errors = np.linalg.norm(np.diff(pos_est, axis=0) - np.diff(pos_gt, axis=0), axis=1)
     return float(np.sqrt(np.mean(errors ** 2)))
@@ -157,13 +150,6 @@ def build_index(dataset_root: Path, baseline_name: str, experiment_names: list[s
         raise RuntimeError(f"Mono baseline trajectory is empty: {mono_traj_path}")
     print(f"Mono traj     : {len(mono_ts)} poses")
 
-    # scale-correct mono
-    mono_idx, mono_valid = nearest_match(mono_ts, gt_ts)
-    scale = global_scale(mono_pos[mono_valid], gt_pos[mono_idx[mono_valid]]) \
-            if mono_valid.sum() > 10 else 1.0
-    mono_pos_scaled = mono_pos * scale
-    print(f"Mono scale    : {scale:.4f}\n")
-
     # precompute per-window mono RTE once
     n_windows = n_frames // WINDOW_SIZE
     mono_window_rtes = {}
@@ -174,10 +160,11 @@ def build_index(dataset_root: Path, baseline_name: str, experiment_names: list[s
         both = m_valid & g_valid
         if both.sum() >= int(MIN_COVERAGE * WINDOW_SIZE):
             mono_window_rtes[w] = window_rte(
-                mono_pos_scaled[m_idx[both]], gt_pos[g_idx[both]]
+                mono_pos[m_idx[both]], gt_pos[g_idx[both]]
             )
         else:
             mono_window_rtes[w] = None
+    print()
 
     # collect conditions from all experiment YAMLs
     all_conditions = {}   # {cond_name: (config_dict, traj_path)}
