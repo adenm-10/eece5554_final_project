@@ -23,6 +23,34 @@ def apply_blur(img, kernel_size, sigma=0):
     return cv2.GaussianBlur(img, (kernel_size, kernel_size), sigma)
 
 
+def apply_motion_blur(img, length, angle=0):
+    """Apply directional motion blur with a linear kernel of given length and angle (degrees)."""
+    kernel = np.zeros((length, length), dtype=np.float32)
+    kernel[length // 2, :] = 1.0 / length
+    center = (length // 2, length // 2)
+    M = cv2.getRotationMatrix2D(center, angle, 1.0)
+    kernel = cv2.warpAffine(kernel, M, (length, length))
+    return cv2.filter2D(img, -1, kernel)
+
+
+def apply_brightness(img, alpha):
+    """Scale pixel intensity by alpha. Values clipped to [0, 255]."""
+    return np.clip(img.astype(np.float32) * alpha, 0, 255).astype(np.uint8)
+
+
+def apply_salt_and_pepper(img, density, rng):
+    """Corrupt `density` fraction of pixels to 0 (pepper) or 255 (salt), split evenly."""
+    out = img.copy()
+    n_pixels = img.size
+    n_corrupt = int(n_pixels * density)
+    coords = rng.choice(n_pixels, size=n_corrupt, replace=False)
+    salt_coords = coords[:n_corrupt // 2]
+    pepper_coords = coords[n_corrupt // 2:]
+    out.flat[salt_coords] = 255
+    out.flat[pepper_coords] = 0
+    return out
+
+
 def apply_occlusion(img, frac, rng):
     """Black-out a random rectangular patch covering `frac` of image area."""
     h, w = img.shape[:2]
@@ -72,6 +100,25 @@ def _build_gaussian_blur(params: dict):
 def _build_gaussian_noise(params: dict):
     sigma = float(params["sigma"])
     return lambda img, rng: add_gaussian_noise(img, sigma, rng)
+
+
+@_register_type("motion_blur")
+def _build_motion_blur(params: dict):
+    length = int(params["length"])
+    angle  = float(params.get("angle", 0))
+    return lambda img, rng: apply_motion_blur(img, length, angle)
+
+
+@_register_type("brightness")
+def _build_brightness(params: dict):
+    alpha = float(params["alpha"])
+    return lambda img, rng: apply_brightness(img, alpha)
+
+
+@_register_type("salt_and_pepper")
+def _build_salt_and_pepper(params: dict):
+    density = float(params["density"])
+    return lambda img, rng: apply_salt_and_pepper(img, density, rng)
 
 
 @_register_type("occlusion")

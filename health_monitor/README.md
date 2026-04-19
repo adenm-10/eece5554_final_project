@@ -45,15 +45,23 @@ The mono trajectory is used as the per-window RTE baseline.
 
 ### Step 2 — Run degradation experiments (stereo only)
 ```bash
-python run_pipeline.py --config experiments/new_blur1.yaml
+python run_pipeline.py --config experiments/blur_sweep_B.yaml
+python run_pipeline.py --config experiments/motion_blur_sweep.yaml
+python run_pipeline.py --config experiments/snp_sweep.yaml
+python run_pipeline.py --config experiments/brightness_sweep.yaml
+python run_pipeline.py --config experiments/occlusion_sweep.yaml
 ```
-Produces `results/new_blur1/<traj>/<condition>/stereo/` trajectories for each condition.
+Produces `results/<exp>/<traj>/<condition>/stereo/` trajectories for each condition.
+
+Once a condition fails (SLAM tracking lost), all subsequent conditions in the same
+sweep are automatically written as FAILED without running — no wasted compute.
 
 ### Step 3 — Build dataset index
 ```bash
 python health_monitor/build_dataset_index.py \
     --baseline clean \
-    --experiments new_blur1
+    --experiments blur_sweep_B motion_blur_sweep snp_sweep brightness_sweep occlusion_sweep \
+    --skip-failed
 ```
 - Reads traj metadata from `results/<exp>/<traj>/metadata.yaml`
 - Reads per-run condition params from `results/<exp>/<traj>/<cond>/stereo/metadata.yaml`
@@ -63,20 +71,30 @@ python health_monitor/build_dataset_index.py \
   - `degradations/<cond>/config.json` — degradation params (applied on-the-fly)
   - `degradations/<cond>/dataset.csv` — `window_start_ts, rte_stereo, rte_mono, severity`
 
+`--skip-failed` omits conditions where SLAM fully failed (all windows severity=1.0),
+keeping the dataset severity distribution balanced.
+
 Multiple baselines and experiments can be passed:
 ```bash
 python health_monitor/build_dataset_index.py \
     --baseline clean room2_clean \
-    --experiments new_blur1 noise_sweep
+    --experiments blur_sweep_B motion_blur_sweep \
+    --skip-failed
 ```
 
 #### Severity policies
 ```bash
 # Default: ratio  (severity = rte_s / (rte_s + rte_m))
-python health_monitor/build_dataset_index.py --baseline clean --experiments new_blur1
+python health_monitor/build_dataset_index.py \
+    --baseline clean \
+    --experiments blur_sweep_B motion_blur_sweep \
+    --skip-failed
 
 # Log-ratio  (scale-agnostic sigmoid, alpha controls sharpness)
-python health_monitor/build_dataset_index.py --baseline clean --experiments new_blur1 \
+python health_monitor/build_dataset_index.py \
+    --baseline clean \
+    --experiments blur_sweep_B motion_blur_sweep \
+    --skip-failed \
     --severity-policy log_ratio --severity-params alpha=3.0
 ```
 
@@ -110,7 +128,7 @@ Outputs:
 data/health_monitor_dataset/
 └── sequence/
     └── <traj>/
-        ├── meta.json                        # cam0_eq_dir, cam1_eq_dir paths
+        ├── meta.json                        # cam0_dir, cam1_dir paths
         └── degradations/
             └── <condition>/
                 ├── config.json              # degradation type + params
@@ -120,10 +138,21 @@ data/health_monitor_dataset/
 Images are **not** stored here — the dataset loader reads them directly from the original
 TUM sequence directories (paths resolved via `meta.json`).
 
+## Supported Degradation Types
+
+| Type | Parameters | Notes |
+|---|---|---|
+| `gaussian_blur` | `kernel_size` (odd), `sigma` | Use Option B: `kernel_size = 6*sigma` rounded to odd |
+| `motion_blur` | `length`, `angle` (degrees) | Directional linear kernel |
+| `salt_and_pepper` | `density` | Fraction of pixels set to 0 or 255 |
+| `brightness` | `alpha` | Pixel scale factor; `<1` underexposure, `>1` overexposure |
+| `gaussian_noise` | `sigma` | Additive Gaussian noise |
+| `occlusion` | `frac` | Random black rectangle covering fraction of image |
+
 ## Experiment YAML Format
 
 ```yaml
-name: new_blur1
+name: blur_sweep_B
 seed: 42
 timeout: 600
 
@@ -131,14 +160,14 @@ sequences:
   traj1: data/TUM_original/dataset-room1_512_16   # name: path
 
 conditions:
-  blur_ks3:                  # condition name (used as output folder)
-    type: gaussian_blur
+  blur_lv1:
+    type:        gaussian_blur
     kernel_size: 3
-    sigma: 50
-  blur_ks7:
-    type: gaussian_blur
+    sigma:       0.5
+  blur_lv2:
+    type:        gaussian_blur
     kernel_size: 7
-    sigma: 50
+    sigma:       1.0
 
 slam_modes:
   - stereo                   # degradation experiments: stereo only

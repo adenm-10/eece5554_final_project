@@ -1,0 +1,42 @@
+conditions:
+- bright_lv1
+- bright_lv2
+- bright_lv3
+- bright_lv4
+- bright_lv5
+- bright_lv5b
+- bright_lv5c
+- bright_lv5d
+- bright_lv6
+experiment: brightness_sweep
+runs:
+- condition: bright_lv5b
+  elapsed_s: 183.8
+  mode: stereo
+  status: FAILED
+  traj: traj1
+- condition: bright_lv5c
+  elapsed_s: 173.7
+  max: 0.03238198766501102
+  mean: 0.0067603122982450295
+  median: 0.0059179981916486985
+  min: 0.0005075817258825312
+  mode: stereo
+  rmse: 0.007830313860641222
+  sse: 0.16842905023394417
+  std: 0.003951201435810007
+  traj: traj1
+- condition: bright_lv5d
+  elapsed_s: 173.6
+  max: 0.11125330178523564
+  mean: 0.007649446701929257
+  median: 0.006597145124820738
+  min: 0.00038999104185018864
+  mode: stereo
+  rmse: 0.009835386924891021
+  sse: 0.26660120791214637
+  std: 0.00618229739794689
+  traj: traj1
+seed: 42
+slam_modes:
+- stereo

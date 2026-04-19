@@ -1,0 +1,49 @@
+conditions:
+- occ_lv1
+- occ_lv2
+- occ_lv3
+- occ_lv4
+- occ_lv5
+- occ_lv5b
+- occ_lv5c
+- occ_lv5d
+- occ_lv5e
+- occ_lv6
+- occ_lv7
+experiment: occlusion_sweep
+runs:
+- condition: occ_lv5b
+  elapsed_s: 165.2
+  max: 0.03130286637312518
+  mean: 0.0072956032465816365
+  median: 0.006240733496491804
+  min: 0.00033615196282491867
+  mode: stereo
+  rmse: 0.00849584333834556
+  sse: 0.19827668551961508
+  std: 0.0043535648953677165
+  traj: traj1
+- condition: occ_lv5c
+  elapsed_s: 167.1
+  max: 0.040068450041600215
+  mean: 0.007264864061040217
+  median: 0.006151087644204611
+  min: 0.00037749274656142666
+  mode: stereo
+  rmse: 0.008576042474334312
+  sse: 0.1995370927670633
+  std: 0.004557439489032456
+  traj: traj1
+- condition: occ_lv5d
+  elapsed_s: 182.7
+  mode: stereo
+  status: FAILED
+  traj: traj1
+- condition: occ_lv5e
+  elapsed_s: 0
+  mode: stereo
+  status: FAILED
+  traj: traj1
+seed: 42
+slam_modes:
+- stereo

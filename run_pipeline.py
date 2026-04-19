@@ -76,6 +76,7 @@ def main():
 
     all_results = {}
     manifest = []
+    failed_after = set()  # (traj, mode) keys where first failure was seen
 
     for traj, cond, mode in cfg.run_combos():
         tag = f"{traj}_{cond}_{mode}"
@@ -92,7 +93,20 @@ def main():
             with open(stats_file) as f:
                 cached = yaml.safe_load(f)
             all_results[(traj, cond, mode)] = cached
+            if cached.get("status") == "FAILED":
+                failed_after.add((traj, mode))
             print(f"  Cached. RMSE={cached.get('rmse', 'N/A')}")
+            continue
+
+        # Auto-fail conditions beyond the first failure for this (traj, mode)
+        if (traj, mode) in failed_after:
+            entry = {"traj": traj, "condition": cond, "mode": mode, "status": "FAILED", "elapsed_s": 0}
+            run_dir.mkdir(parents=True, exist_ok=True)
+            with open(stats_file, "w") as f:
+                yaml.dump(entry, f, default_flow_style=False)
+            all_results[(traj, cond, mode)] = entry
+            manifest.append(entry)
+            print(f"  Skipped (previous condition failed).")
             continue
 
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -112,6 +126,7 @@ def main():
             print(f"  ATE RMSE: {stats['rmse']:.4f} m  ({elapsed:.0f}s)")
         else:
             entry["status"] = "FAILED"
+            failed_after.add((traj, mode))
             print(f"  FAILED ({elapsed:.0f}s)")
 
         with open(stats_file, "w") as f:

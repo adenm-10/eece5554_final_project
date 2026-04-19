@@ -134,8 +134,8 @@ def resolve_sequence_paths(sequence_path: str) -> dict:
         p = PROJECT_ROOT / p
     p = p.resolve()
     return {
-        "cam0_eq_dir": p / "mav0" / "cam0_eq" / "data",
-        "cam1_eq_dir": p / "mav0" / "cam1_eq" / "data",
+        "cam0_eq_dir": p / "mav0" / "cam0" / "data",
+        "cam1_eq_dir": p / "mav0" / "cam1" / "data",
         "gt_csv":      p / "mav0" / "mocap0" / "data.csv",
     }
 
@@ -161,8 +161,8 @@ class TrajData:
         self.gt_ts, self.gt_pos = load_gt(paths["gt_csv"])
 
         # paths for meta.json
-        self.cam0_eq_dir = str(paths["cam0_eq_dir"])
-        self.cam1_eq_dir = str(paths["cam1_eq_dir"])
+        self.cam0_eq_dir = str(paths["cam0_eq_dir"])  # stored as cam0_dir in meta.json
+        self.cam1_eq_dir = str(paths["cam1_eq_dir"])  # stored as cam1_dir in meta.json
 
         # mono window RTEs — populated later
         self.mono_window_rtes: dict[int, float | None] = {}
@@ -241,7 +241,8 @@ def build_baseline_map(baseline_names: list[str]) -> dict[str, TrajData]:
 # ── Process conditions ────────────────────────────────────────────────────────
 
 def process_experiment(exp_name: str, traj_map: dict[str, TrajData],
-                       dataset_root: Path, policy: SeverityPolicy):
+                       dataset_root: Path, policy: SeverityPolicy,
+                       skip_failed: bool = False):
     result_folder = RESULTS_ROOT / exp_name
     if not result_folder.exists():
         print(f"[WARN] Result folder not found: {result_folder} — skipping")
@@ -273,8 +274,8 @@ def process_experiment(exp_name: str, traj_map: dict[str, TrajData],
             json.dump({
                 "traj":          traj,
                 "sequence_path": td.sequence_path,
-                "cam0_eq_dir":   td.cam0_eq_dir,
-                "cam1_eq_dir":   td.cam1_eq_dir,
+                "cam0_dir":      td.cam0_eq_dir,
+                "cam1_dir":      td.cam1_eq_dir,
             }, f, indent=2)
 
         # iterate condition dirs
@@ -305,11 +306,22 @@ def process_experiment(exp_name: str, traj_map: dict[str, TrajData],
             n_windows = td.n_frames // WINDOW_SIZE
 
             if len(stereo_ts) == 0:
+                if skip_failed:
+                    print(f"    SLAM failed — skipping (--skip-failed)")
+                    import shutil
+                    shutil.rmtree(out_dir, ignore_errors=True)
+                    continue
                 print(f"    SLAM failed — all {n_windows} windows → severity=1.0")
                 rows = _failed_rows(td.cam_ts, td.mono_window_rtes, n_windows)
             else:
                 print(f"    Stereo poses: {len(stereo_ts)}")
                 rows = _compute_rows(td, stereo_ts, stereo_pos, n_windows, policy)
+
+                if skip_failed and all(r["severity"] == 1.0 for r in rows):
+                    print(f"    All windows severity=1.0 — skipping (--skip-failed)")
+                    import shutil
+                    shutil.rmtree(out_dir, ignore_errors=True)
+                    continue
 
             df = pd.DataFrame(rows)
             df.to_csv(out_dir / "dataset.csv", index=False)
@@ -374,6 +386,8 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", default=None,
                         help="Path to health_monitor_dataset root "
                              "(default: data/health_monitor_dataset)")
+    parser.add_argument("--skip-failed", action="store_true",
+                        help="Skip conditions where SLAM fully failed (all windows severity=1.0)")
     parser.add_argument("--severity-policy", default="ratio",
                         choices=list(SEVERITY_POLICIES.keys()))
     parser.add_argument("--severity-params", nargs="*", default=[], metavar="KEY=VALUE")
@@ -397,6 +411,7 @@ if __name__ == "__main__":
     traj_map = build_baseline_map(args.baseline)
 
     for exp_name in args.experiments:
-        process_experiment(exp_name, traj_map, dataset_root, policy)
+        process_experiment(exp_name, traj_map, dataset_root, policy,
+                           skip_failed=args.skip_failed)
 
     print("\nDone.")

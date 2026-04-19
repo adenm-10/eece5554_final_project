@@ -60,6 +60,28 @@ def _apply_config(img, config):
     if t == "occlusion":
         return _apply_occlusion(img, float(config["frac"]))
 
+    if t == "salt_and_pepper":
+        density = float(config["density"])
+        out = img.copy()
+        n_corrupt = int(img.size * density)
+        coords = np.random.choice(img.size, size=n_corrupt, replace=False)
+        out.flat[coords[:n_corrupt // 2]] = 255
+        out.flat[coords[n_corrupt // 2:]] = 0
+        return out
+
+    if t == "motion_blur":
+        length = int(config["length"])
+        angle  = float(config.get("angle", 0))
+        kernel = np.zeros((length, length), dtype=np.float32)
+        kernel[length // 2, :] = 1.0 / length
+        M = cv2.getRotationMatrix2D((length // 2, length // 2), angle, 1.0)
+        kernel = cv2.warpAffine(kernel, M, (length, length))
+        return cv2.filter2D(img, -1, kernel)
+
+    if t == "brightness":
+        alpha = float(config["alpha"])
+        return np.clip(img.astype(np.float32) * alpha, 0, 255).astype(np.uint8)
+
     raise ValueError(f"Unknown degradation type: {t!r}")
 
 
@@ -118,8 +140,8 @@ class StereoHealthDataset(Dataset):
                 meta = json.load(f)
 
             traj         = traj_dir.name
-            cam0_eq_dir  = Path(meta["cam0_eq_dir"])
-            cam1_eq_dir  = Path(meta["cam1_eq_dir"])
+            cam0_eq_dir  = Path(meta.get("cam0_dir") or meta["cam0_eq_dir"])
+            cam1_eq_dir  = Path(meta.get("cam1_dir") or meta["cam1_eq_dir"])
 
             cam0_map = {int(f.stem): f for f in sorted(cam0_eq_dir.glob("*.png"))}
             cam1_map = {int(f.stem): f for f in sorted(cam1_eq_dir.glob("*.png"))}

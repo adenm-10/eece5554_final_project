@@ -1,0 +1,36 @@
+conditions:
+- blur_lv1
+- blur_lv2
+- blur_lv3
+- blur_lv4
+- blur_lv5
+- blur_lv5b
+- blur_lv5c
+- blur_lv5c1
+- blur_lv5c2
+- blur_lv5c3
+- blur_lv5d
+- blur_lv5e
+- blur_lv5f
+- blur_lv6
+- blur_lv7
+experiment: blur_sweep_B
+runs:
+- condition: blur_lv5c1
+  elapsed_s: 190.3
+  mode: stereo
+  status: FAILED
+  traj: traj1
+- condition: blur_lv5c2
+  elapsed_s: 192.9
+  mode: stereo
+  status: FAILED
+  traj: traj1
+- condition: blur_lv5c3
+  elapsed_s: 191.6
+  mode: stereo
+  status: FAILED
+  traj: traj1
+seed: 42
+slam_modes:
+- stereo

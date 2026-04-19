@@ -1,0 +1,67 @@
+conditions:
+- snp_lv1
+- snp_lv2
+- snp_lv3
+- snp_lv4
+- snp_lv5
+- snp_lv6
+- snp_lv7
+- snp_lv7a1
+- snp_lv7a2
+- snp_lv7a3
+- snp_lv7a4
+- snp_lv7b
+- snp_lv7c
+- snp_lv7d
+- snp_lv7e
+- snp_lv7f
+- snp_lv8
+experiment: snp_sweep
+runs:
+- condition: snp_lv7a1
+  elapsed_s: 172.5
+  max: 0.11362257484550198
+  mean: 0.008346303479209331
+  median: 0.00704310129999744
+  min: 0.00047747951793069004
+  mode: stereo
+  rmse: 0.010332942842015786
+  sse: 0.27343722161527145
+  std: 0.006091709613015339
+  traj: traj1
+- condition: snp_lv7a2
+  elapsed_s: 170.0
+  max: 0.05611071146420142
+  mean: 0.008183597427447621
+  median: 0.007029111099342268
+  min: 0.00047010358667389716
+  mode: stereo
+  rmse: 0.009660886003897997
+  sse: 0.23538511575514737
+  std: 0.005134340417793201
+  traj: traj1
+- condition: snp_lv7a3
+  elapsed_s: 177.5
+  max: 0.11095525264716453
+  mean: 0.0101148443657265
+  median: 0.00750953658186433
+  min: 0.00028640411867020347
+  mode: stereo
+  rmse: 0.014308155465841793
+  sse: 0.4542810311801957
+  std: 0.010119942504373688
+  traj: traj1
+- condition: snp_lv7a4
+  elapsed_s: 176.9
+  max: 0.03568768806626562
+  mean: 0.007356936481880731
+  median: 0.006242455287272193
+  min: 0.00039006004262622445
+  mode: stereo
+  rmse: 0.008721210458957865
+  sse: 0.20323101571513316
+  std: 0.0046834813409480395
+  traj: traj1
+seed: 42
+slam_modes:
+- stereo
