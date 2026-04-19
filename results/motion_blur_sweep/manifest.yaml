@@ -3,6 +3,8 @@ conditions:
 - mblur_lv2
 - mblur_lv3
 - mblur_lv3b
+- mblur_lv3b1
+- mblur_lv3b2
 - mblur_lv3c
 - mblur_lv3d
 - mblur_lv4
@@ -11,27 +13,22 @@ conditions:
 - mblur_lv7
 experiment: motion_blur_sweep
 runs:
-- condition: mblur_lv3b
-  elapsed_s: 167.3
-  max: 0.3326979509409813
-  mean: 0.009729653267646517
-  median: 0.007484859627710713
-  min: 0.0005007822895340599
+- condition: mblur_lv3b1
+  elapsed_s: 169.9
+  max: 0.06341500870123211
+  mean: 0.006647246402298955
+  median: 0.00529763384254389
+  min: 0.00013840513292238772
   mode: stereo
-  rmse: 0.017019939937191354
-  sse: 0.6926209479182527
-  std: 0.01396467696572236
-  traj: traj1
-- condition: mblur_lv3c
-  elapsed_s: 178.7
-  mode: stereo
-  status: FAILED
-  traj: traj1
-- condition: mblur_lv3d
-  elapsed_s: 0
+  rmse: 0.008523883422258445
+  sse: 0.1824406939651896
+  std: 0.005335794585942746
+  traj: traj2
+- condition: mblur_lv3b2
+  elapsed_s: 178.0
   mode: stereo
   status: FAILED
-  traj: traj1
+  traj: traj2
 seed: 42
 slam_modes:
 - stereo

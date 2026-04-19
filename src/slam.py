@@ -1,8 +1,9 @@
 import os
 import subprocess
+from pathlib import Path
 from src.config import (
     ORBSLAM_DIR, VOCAB, STEREO_SETTINGS, MONO_SETTINGS,
-    STEREO_BIN, MONO_BIN, TIMESTAMPS, IMU_CSV, TIMEOUT,
+    STEREO_BIN, MONO_BIN, TIMEOUT,
 )
 
 
@@ -20,16 +21,24 @@ def get_env():
     return env
 
 
-def run_stereo(dataset_dir, tag, run_dir):
+def _seq_files(orig_dir: Path):
+    """Resolve timestamps.txt and imu0/data.csv from the original sequence dir."""
+    timestamps = orig_dir / "timestamps.txt"
+    imu_csv    = orig_dir / "mav0" / "imu0" / "data.csv"
+    return timestamps, imu_csv
+
+
+def run_stereo(dataset_dir, tag, run_dir, orig_dir=None):
     """Run stereo-inertial TUM-VI example."""
     cam0 = dataset_dir / "mav0" / "cam0" / "data"
     cam1 = dataset_dir / "mav0" / "cam1" / "data"
+    timestamps, imu_csv = _seq_files(orig_dir or dataset_dir)
 
     cmd = [
         str(STEREO_BIN),
         str(VOCAB), str(STEREO_SETTINGS),
         str(cam0), str(cam1),
-        str(TIMESTAMPS), str(IMU_CSV),
+        str(timestamps), str(imu_csv),
         tag,
     ]
 
@@ -45,15 +54,16 @@ def run_stereo(dataset_dir, tag, run_dir):
             print(f"    TIMEOUT after {TIMEOUT}s")
 
 
-def run_mono(dataset_dir, tag, run_dir):
+def run_mono(dataset_dir, tag, run_dir, orig_dir=None):
     """Run mono-inertial TUM-VI example."""
     cam0 = dataset_dir / "mav0" / "cam0" / "data"
+    timestamps, imu_csv = _seq_files(orig_dir or dataset_dir)
 
     cmd = [
         str(MONO_BIN),
         str(VOCAB), str(MONO_SETTINGS),
         str(cam0),
-        str(TIMESTAMPS), str(IMU_CSV),
+        str(timestamps), str(imu_csv),
         tag,
     ]
 

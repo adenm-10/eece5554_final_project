@@ -12,6 +12,7 @@ timeout: 600
 
 sequences:
   traj1: data/TUM_original/dataset-room1_512_16
+  traj2: data/TUM_original/dataset-room2_512_16
 
 conditions:
   bright_lv1:

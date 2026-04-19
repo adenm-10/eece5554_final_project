@@ -42,6 +42,13 @@ def main():
 
     dataset_paths = {}  # (traj, condition) -> Path
     for traj_name, traj_src in cfg.trajs.items():
+        ts_file = traj_src / "timestamps.txt"
+        if not ts_file.exists():
+            raise FileNotFoundError(
+                f"[{traj_name}] timestamps.txt not found: {ts_file}\n"
+                f"Generate it with:\n"
+                f"  tail -n +2 {traj_src}/mav0/cam0/data.csv | cut -d',' -f1 > {ts_file}"
+            )
 
         # write traj-level metadata once per traj
         traj_meta_path = cfg.results_dir / traj_name / "metadata.yaml"
@@ -63,11 +70,15 @@ def main():
             )
             dataset_paths[(traj_name, cond)] = ds
 
-    # ── 2. Convert ground truth ──
-    gt_tum = cfg.results_dir / "gt.txt"
-    if not gt_tum.exists():
-        print("\nConverting ground truth...")
-        convert_gt_to_tum(GT_CSV, gt_tum)
+    # ── 2. Convert ground truth (one per traj) ──
+    gt_tum_by_traj = {}
+    for traj_name, traj_src in cfg.trajs.items():
+        gt_tum = cfg.results_dir / traj_name / "gt.txt"
+        if not gt_tum.exists():
+            print(f"\nConverting ground truth for {traj_name}...")
+            gt_csv = traj_src / "mav0" / "mocap0" / "data.csv"
+            convert_gt_to_tum(gt_csv, gt_tum)
+        gt_tum_by_traj[traj_name] = gt_tum
 
     # ── 3. Run SLAM + evaluate ──
     print("\n" + "=" * 60)
@@ -112,12 +123,13 @@ def main():
         run_dir.mkdir(parents=True, exist_ok=True)
         t0 = time.time()
 
+        orig_dir = cfg.trajs[traj]
         if mode == "stereo":
-            run_stereo(dataset_dir, tag, run_dir)
+            run_stereo(dataset_dir, tag, run_dir, orig_dir=orig_dir)
         elif mode == "mono":
-            run_mono(dataset_dir, tag, run_dir)
+            run_mono(dataset_dir, tag, run_dir, orig_dir=orig_dir)
 
-        stats = evaluate(run_dir, gt_tum, tag)
+        stats = evaluate(run_dir, gt_tum_by_traj[traj], tag)
         elapsed = time.time() - t0
 
         entry = {"traj": traj, "condition": cond, "mode": mode, "elapsed_s": round(elapsed, 1)}

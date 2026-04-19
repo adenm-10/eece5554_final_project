@@ -11,6 +11,7 @@ timeout: 600
 
 sequences:
   traj1: data/TUM_original/dataset-room1_512_16
+  traj2: data/TUM_original/dataset-room2_512_16
 
 conditions:
   mblur_lv1:
@@ -31,6 +32,16 @@ conditions:
   mblur_lv3b:
     type:   motion_blur
     length: 25
+    angle:  0
+
+  mblur_lv3b1:
+    type:   motion_blur
+    length: 26
+    angle:  0
+
+  mblur_lv3b2:
+    type:   motion_blur
+    length: 27
     angle:  0
 
   mblur_lv3c:

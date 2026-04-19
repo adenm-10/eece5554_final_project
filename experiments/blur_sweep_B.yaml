@@ -11,6 +11,7 @@ timeout: 600
 
 sequences:
   traj1: data/TUM_original/dataset-room1_512_16
+  traj2: data/TUM_original/dataset-room2_512_16
 
 conditions:
   blur_lv1:
@@ -42,6 +43,26 @@ conditions:
     type:        gaussian_blur
     kernel_size: 33
     sigma:       5.5
+
+  blur_lv5b1:
+    type:        gaussian_blur
+    kernel_size: 37
+    sigma:       5.6
+
+  blur_lv5b2:
+    type:        gaussian_blur
+    kernel_size: 37
+    sigma:       5.7
+
+  blur_lv5b3:
+    type:        gaussian_blur
+    kernel_size: 37
+    sigma:       5.8
+
+  blur_lv5b4:
+    type:        gaussian_blur
+    kernel_size: 37
+    sigma:       5.9
 
   blur_lv5c:
     type:        gaussian_blur
