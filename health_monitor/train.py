@@ -18,7 +18,7 @@ import argparse
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, random_split, WeightedRandomSampler
 from torchvision.models import resnet18, ResNet18_Weights
 from pathlib import Path
 import matplotlib
@@ -57,6 +57,9 @@ class FrameEncoder(nn.Module):
         if freeze_backbone:
             for param in self.backbone.parameters():
                 param.requires_grad = False
+            # unfreeze the last ResNet layer (layer4) for fine-tuning
+            for param in list(self.backbone.children())[-1].parameters():
+                param.requires_grad = True
 
         self.project = nn.Sequential(
             nn.Linear(1536, embed_dim),
@@ -251,12 +254,24 @@ def main():
         generator=torch.Generator().manual_seed(SEED)
     )
 
-    n_workers    = 0 if args.quick else 4
+    n_workers = 0 if args.quick else 4
+
+    # weighted sampler — balance healthy vs degraded to fix mid-range bias
+    train_severities = np.array([dataset.windows[i][1]
+                                  for i in train_set.indices])
+    bins    = [0.0, 0.25, 0.5, 0.75, 1.01]
+    bin_idx = np.digitize(train_severities, bins) - 1
+    bin_counts = np.bincount(bin_idx, minlength=len(bins) - 1).astype(float)
+    bin_weights = 1.0 / np.maximum(bin_counts, 1)
+    sample_weights = torch.tensor(bin_weights[bin_idx], dtype=torch.float)
+    sampler = WeightedRandomSampler(sample_weights, num_samples=len(train_set), replacement=True)
+
     train_loader = DataLoader(train_set, batch_size=BATCH_SIZE,
-                              shuffle=True,  num_workers=n_workers, pin_memory=True)
+                              sampler=sampler, num_workers=n_workers, pin_memory=True)
     val_loader   = DataLoader(val_set,   batch_size=BATCH_SIZE,
                               shuffle=False, num_workers=n_workers, pin_memory=True)
     print(f"Train: {len(train_set)}  |  Val: {len(val_set)}")
+    print(f"Bin counts (healthy/mild/degraded/severe): {bin_counts.astype(int)}")
 
     # model
     model = StereoHealthMonitor(
