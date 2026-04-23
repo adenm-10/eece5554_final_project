@@ -32,15 +32,21 @@ DATASET_ROOT = ROOT / "data" / "health_monitor_dataset"
 WINDOW_SIZE  = 20
 IMG_SIZE     = (224, 224)
 
-# Conditions to probe — pick ones with a spread of known severities
+# Conditions to probe — spread of severities across degradation types
 PROBE_CONDITIONS = [
-    "blur_lv1",    # mild blur   — low severity
+    "blur_lv1",    # mild Gaussian blur   — low severity
+    "blur_lv3",    # moderate Gaussian blur
     "blur_lv5b",   # heavy blur  — approaching cliff
     "blur_lv5c",   # past cliff  — high severity
     "mblur_lv1",   # mild motion blur
-    "mblur_lv3b",  # heavy motion blur
+    "mblur_lv2",   # moderate motion blur
+    "mblur_lv3b",  # heavy motion blur — approaching cliff
     "bright_lv1",  # mild brightness change
-    "bright_lv6",  # extreme brightness
+    "bright_lv6",  # extreme underexposure
+    "snp_lv2",     # light salt & pepper
+    "snp_lv5",     # heavy salt & pepper
+    "occ_lv2",     # mild occlusion
+    "occ_lv5",     # heavy occlusion
 ]
 
 
@@ -153,7 +159,7 @@ def load_window(cam0_map, cam1_map, sorted_ts, start_ts, cfg):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--traj",      default="traj1")
-    parser.add_argument("--n-windows", type=int, default=3,
+    parser.add_argument("--n-windows", type=int, default=5,
                         help="Windows to sample per condition")
     parser.add_argument("--out",       default=str(ROOT / "analysis" / "model_sanity_check.png"))
     args = parser.parse_args()
@@ -259,11 +265,87 @@ def main():
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # summary
+    # ── Summary stats ─────────────────────────────────────────────────────────
     errors = [abs(r[1] - r[2]) for r in results]
     print(f"\nMAE: {np.mean(errors):.4f}  |  Max error: {np.max(errors):.4f}")
     correct = sum(1 for r in results if (r[1] >= 0.5) == (r[2] >= 0.5))
     print(f"Crossover accuracy: {correct}/{len(results)} = {correct/len(results):.1%}")
+
+    # ── Crossover classification summary plot ─────────────────────────────────
+    gts   = np.array([r[1] for r in results])
+    preds = np.array([r[2] for r in results])
+    conds = [r[0] for r in results]
+
+    gt_flag   = gts   >= 0.5   # True = "should switch to mono"
+    pred_flag = preds >= 0.5
+
+    tp = np.sum( gt_flag &  pred_flag)   # correctly flagged degraded
+    tn = np.sum(~gt_flag & ~pred_flag)   # correctly flagged healthy
+    fp = np.sum(~gt_flag &  pred_flag)   # false alarm
+    fn = np.sum( gt_flag & ~pred_flag)   # missed degradation
+
+    total    = len(results)
+    accuracy = (tp + tn) / total
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    fig.suptitle(
+        f"Crossover Classification Summary  —  {args.traj}  |  "
+        f"Accuracy: {tp+tn}/{total} = {accuracy:.1%}",
+        fontsize=11
+    )
+
+    # Left: scatter predicted vs ground-truth severity, coloured by correctness
+    ax = axes[0]
+    correct_mask = gt_flag == pred_flag
+    ax.scatter(gts[ correct_mask], preds[ correct_mask],
+               color="#2ca02c", alpha=0.7, s=60, label=f"Correct ({correct_mask.sum()})", zorder=3)
+    ax.scatter(gts[~correct_mask], preds[~correct_mask],
+               color="#d62728", alpha=0.9, s=80, marker="X",
+               label=f"Misclassified ({(~correct_mask).sum()})", zorder=4)
+    ax.plot([0, 1], [0, 1], "k--", linewidth=0.8, alpha=0.4, label="perfect")
+    ax.axvline(0.5, color="gray", linestyle=":", linewidth=1.0, alpha=0.8)
+    ax.axhline(0.5, color="gray", linestyle=":", linewidth=1.0, alpha=0.8)
+    ax.fill_between([0, 0.5], [0.5, 0.5], [1, 1], color="#d62728", alpha=0.04)   # FP zone
+    ax.fill_between([0.5, 1], [0,   0  ], [0.5, 0.5], color="#d62728", alpha=0.04)  # FN zone
+    ax.set_xlabel("Ground-truth severity", fontsize=10)
+    ax.set_ylabel("Predicted severity",   fontsize=10)
+    ax.set_title("Predicted vs True Severity\n(coloured by crossover correctness)", fontsize=9)
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.2)
+    # annotate quadrants
+    for (x, y, txt) in [(0.25, 0.75, "FP\n(false alarm)"),
+                         (0.75, 0.25, "FN\n(missed)")]:
+        ax.text(x, y, txt, ha="center", va="center", fontsize=7.5,
+                color="#d62728", alpha=0.6)
+    ax.text(0.25, 0.25, "TN\n(healthy ✓)", ha="center", va="center",
+            fontsize=7.5, color="#2ca02c", alpha=0.6)
+    ax.text(0.75, 0.75, "TP\n(degraded ✓)", ha="center", va="center",
+            fontsize=7.5, color="#2ca02c", alpha=0.6)
+
+    # Right: confusion matrix as heatmap
+    ax2 = axes[1]
+    cm  = np.array([[tn, fp], [fn, tp]])
+    im  = ax2.imshow(cm, cmap="Blues", vmin=0, vmax=total)
+    for i in range(2):
+        for j in range(2):
+            ax2.text(j, i, str(cm[i, j]), ha="center", va="center",
+                     fontsize=18, fontweight="bold",
+                     color="white" if cm[i, j] > total * 0.4 else "black")
+    ax2.set_xticks([0, 1]); ax2.set_yticks([0, 1])
+    ax2.set_xticklabels(["Pred: Healthy\n(< 0.5)", "Pred: Degrade\n(≥ 0.5)"], fontsize=9)
+    ax2.set_yticklabels(["GT: Healthy\n(< 0.5)", "GT: Degraded\n(≥ 0.5)"], fontsize=9)
+    ax2.set_title(
+        f"Confusion Matrix\nTP={tp}  TN={tn}  FP={fp}  FN={fn}  |  Acc={accuracy:.1%}",
+        fontsize=9
+    )
+    plt.colorbar(im, ax=ax2, fraction=0.046, pad=0.04)
+
+    plt.tight_layout()
+    summary_path = out_path.parent / f"{out_path.stem}_crossover_summary.png"
+    fig.savefig(summary_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved → {summary_path.name}")
 
 
 if __name__ == "__main__":

@@ -1,154 +1,282 @@
-# ORB-SLAM3 Stereo Noise Robustness Benchmark
+# Stereo Camera Health Monitor for ORB-SLAM3
 
-Measures how Gaussian noise on one stereo camera degrades ORB-SLAM3 accuracy on TUM-VI, using mono-inertial performance as a baseline threshold.
+Characterizes how five types of image degradation affect stereo-inertial SLAM accuracy,
+identifies the crossover point where switching to monocular becomes beneficial, and trains
+a learned health monitor that predicts degradation severity from raw stereo image pairs.
 
-## Setup
+**Dataset:** TUM-VI (room1, room2) | **SLAM:** ORB-SLAM3 | **Monitor:** ResNet18 + GRU
 
-**Prerequisites:** Linux, cmake, gcc/g++, OpenCV 4.x, Eigen3, Python 3.8+.
+---
 
-**1. Build ORB-SLAM3:**
+## What This Project Does
 
-```bash
-git clone https://github.com/UZ-SLAMLab/ORB_SLAM3.git
-cd ORB_SLAM3
-chmod +x build.sh
-./build.sh
-cd ..
+When one stereo camera lens degrades — through blur, occlusion, dirt, or underexposure —
+ORB-SLAM3 continues running without any alert. Trajectory error accumulates silently until
+tracking fails. This project:
+
+1. **Phase 1 — Characterisation:** Sweeps five degradation types across two TUM-VI room
+   sequences, measuring ATE RMSE at each severity level. Identifies failure thresholds and
+   classifies which types produce a learnable warning zone vs. a binary cliff.
+
+2. **Phase 2 — Health Monitor:** Trains a ResNet18 + GRU model on 20-frame stereo windows
+   labeled with a self-supervised severity score derived from the Phase 1 SLAM outputs.
+   The model predicts severity ∈ [0, 1]; a score ≥ 0.5 means the system should switch to
+   mono-inertial mode.
+
+### Severity Metric
+
+```
+severity = RTE_stereo / (RTE_stereo + RTE_mono)
 ```
 
-This builds the library, vocabulary, and example binaries. See the [ORB-SLAM3 README](https://github.com/UZ-SLAMLab/ORB_SLAM3) for dependency details (Pangolin, OpenCV, Eigen3, DBoW2, g2o).
+- `0.0` — stereo performing perfectly relative to mono
+- `0.5` — crossover: stereo and mono are equivalent → switch
+- `1.0` — stereo has failed entirely
 
-**2. Install Python dependencies:**
+No manual annotation is required. Labels are derived entirely from SLAM trajectory outputs.
 
-```bash
-pip install opencv-python-headless numpy matplotlib evo
-```
-
-Use `opencv-python-headless` (not `opencv-python`) to avoid Qt plugin conflicts with Pangolin.
-
-**3. Download TUM-VI dataset:**
-
-```bash
-mkdir -p data/TUM_original
-cd data/TUM_original
-wget https://vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-traj1_512_16.tar
-tar xf dataset-traj1_512_16.tar
-cd ../..
-```
-
-The TUM-VI timestamp files (`TUM_TimeStamps/`) and IMU files (`TUM_IMU/`) ship with ORB-SLAM3 under `ORB_SLAM3/Examples/Stereo-Inertial/`. The pipeline references them from `data/TUM_original/` — copy or symlink them there:
-
-```bash
-cp -r ORB_SLAM3/Examples/Stereo-Inertial/TUM_TimeStamps data/TUM_original/
-cp -r ORB_SLAM3/Examples/Stereo-Inertial/TUM_IMU data/TUM_original/
-```
-
-## Usage
-
-```bash
-python run_pipeline.py
-```
-
-This will:
-
-1. Run mono-inertial once on clean data as a baseline
-2. Generate noisy copies of cam1 (right camera) at each sigma level
-3. Run stereo-inertial on each noisy dataset
-4. Evaluate all trajectories against mocap ground truth using `evo_ape`
-5. Print a summary table and save a plot to `results/noise_benchmark/`
-
-Edit `src/config.py` to change noise levels, timeout, or dataset paths.
+---
 
 ## Project Structure
 
 ```
 eece5554_final_project/
-├── run_pipeline.py          # Entry point — runs the full pipeline
-├── src/
-│   ├── config.py            # Paths, noise levels, constants
-│   ├── noise.py             # Generates noisy cam1 images (symlinks cam0/imu)
-│   ├── convert.py           # TUM-VI mocap and ORB-SLAM3 output → TUM format
-│   ├── slam.py              # Launches stereo/mono ORB-SLAM3 via subprocess
-│   ├── evaluate.py          # Runs evo_ape, parses ATE metrics
-│   └── plot.py              # Plots stereo RMSE vs noise with mono threshold
-├── ORB_SLAM3/               # Built ORB-SLAM3 (vocabulary, examples, libs)
-├── data/
-│   ├── TUM_original/        # Clean TUM-VI dataset + timestamps
-│   └── noisy_datasets/      # Generated noisy datasets (auto-created)
-└── results/
-    └── noise_benchmark/     # Trajectory files, evo results, plots, summary.csv
+│
+├── run_pipeline.py              # Phase 1: run ORB-SLAM3 degradation sweeps
+│
+├── src/                         # Core pipeline utilities
+│   ├── config.py                # Paths, seeds, constants
+│   ├── experiment.py            # Loads experiment YAML, dispatches SLAM runs
+│   ├── slam.py                  # Launches ORB-SLAM3 via subprocess (headless)
+│   ├── evaluate.py              # Runs evo_ape, parses ATE metrics
+│   ├── convert.py               # TUM-VI mocap → TUM trajectory format
+│   ├── noise.py                 # Image degradation functions (applied on-the-fly)
+│   └── plot.py                  # ATE vs degradation plots
+│
+├── experiments/                 # Experiment YAML configs (one per sweep)
+│   ├── clean.yaml               # Clean stereo + mono baselines
+│   ├── blur_sweep_B.yaml        # Gaussian blur sweep (Option B: kernel = 6σ)
+│   ├── motion_blur_sweep.yaml   # Motion blur sweep
+│   ├── snp_sweep.yaml           # Salt & pepper noise sweep
+│   ├── brightness_sweep.yaml    # Brightness scale sweep
+│   └── occlusion_sweep.yaml     # Occlusion fraction sweep
+│
+├── health_monitor/              # Phase 2: model training pipeline
+│   ├── config.py                # Shared paths and constants
+│   ├── build_dataset_index.py   # Computes per-window severity from SLAM results
+│   ├── stereo_health_dataset.py # PyTorch Dataset; applies degradation on-the-fly
+│   ├── train.py                 # Model definition (ResNet18+GRU) + training loop
+│   ├── analyze_dataset.py       # Severity distribution analysis per condition
+│   └── README.md                # Health monitor pipeline details
+│
+├── analysis/                    # Analysis scripts and reports
+│   ├── phase1_analysis.py       # Generates all Phase 1 plots (both trajectories)
+│   ├── model_sanity_check.py    # Probes trained model on known conditions
+│   ├── tsne_pairs.py            # t-SNE on frozen ResNet18 embeddings
+│   ├── tsne_trained_model.py    # t-SNE on trained model GRU hidden state
+│   ├── key_findings.tex         # Phase 1 key findings report
+│   ├── phase2_key_findings.tex  # Phase 2 key findings report
+│   ├── report.tex               # Final project report
+│   └── sanitycheck.tex          # Model sanity check report with figures
+│
+├── results/                     # SLAM run outputs (auto-created, not committed)
+│   └── <exp>/<traj>/<cond>/stereo|mono/
+│       ├── trajectory.txt
+│       └── stats.yaml           # ATE RMSE and other metrics
+│
+├── data/                        # Datasets (not committed)
+│   ├── TUM_original/            # Raw TUM-VI sequences
+│   └── health_monitor_dataset/  # Built dataset index (window CSVs, configs)
+│
+└── checkpoints/                 # Saved model weights (not committed)
+    └── best_model.pt
 ```
 
-## Output
+---
 
-After a run, `results/noise_benchmark/` contains:
+## Setup
 
-- `summary.csv` — ATE metrics for each noise level, with degradation percentages
-- `ate_vs_noise.png` — Stereo RMSE curve with mono baseline as a dashed threshold line
-- `stereo_sigma*/` — Per-run logs, trajectories, and evo results
-- `mono_baseline/` — Mono-inertial baseline run
+**Prerequisites:** Linux, Python 3.10+, CUDA GPU (recommended), ORB-SLAM3 built.
 
-## Configuration
-
-All tunables are in `src/config.py`:
-
-| Variable | Default | Description |
-|---|---|---|
-| `SIGMAS` | `[0, 5, 10, 20, 40, 80]` | Noise standard deviations (pixel intensity, 0–255) |
-| `TIMEOUT` | `600` | Max seconds per ORB-SLAM3 run |
-| `SEED` | `42` | RNG seed for reproducible noise |
-| `ORIG_DATASET` | `data/TUM_original/dataset-traj1_512_16` | Path to clean TUM-VI sequence |
-
-## Notes
-
-- Noisy datasets symlink cam0, imu0, and mocap0 from the original to save disk space. Only cam1 images are copied with noise.
-- ORB-SLAM3 runs headless (`QT_QPA_PLATFORM=offscreen`). To see the viewer, remove that line from `src/slam.py`.
-- The mono baseline uses cam0 (always clean) and serves as an upper bound — once stereo crosses this line, the noisy right camera is actively hurting performance.
-- Re-running skips noise generation for datasets that already exist.
-
-## Using a Different TUM-VI Sequence
-
-All TUM-VI sequences are available in EuRoC format at:
-
-```
-https://vision.in.tum.de/tumvi/exported/euroc/512_16/
-```
-
-To switch to a different sequence (e.g. corridor1):
-
-**1. Download and extract:**
+### 1. Build ORB-SLAM3
 
 ```bash
-cd data/TUM_original
-wget https://vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-corridor1_512_16.tar
-tar xf dataset-corridor1_512_16.tar
+git clone https://github.com/UZ-SLAMLab/ORB_SLAM3.git
+cd ORB_SLAM3 && chmod +x build.sh && ./build.sh && cd ..
 ```
 
-**2. Update three paths in `src/config.py`:**
-
-```python
-ORIG_DATASET = PROJECT_ROOT / "data" / "TUM_original" / "dataset-corridor1_512_16"
-TIMESTAMPS = PROJECT_ROOT / "data" / "TUM_original" / "TUM_TimeStamps" / "dataset-corridor1_512.txt"
-GT_CSV = ORIG_DATASET / "mav0" / "mocap0" / "data.csv"
-```
-
-The IMU path (`IMU_CSV`) doesn't need changing — it's relative to `ORIG_DATASET`.
-
-**3. Clean old results and re-run:**
+### 2. Install Python dependencies
 
 ```bash
-rm -rf results/noise_benchmark/ data/noisy_datasets/
-python run_pipeline.py
+pip install torch torchvision opencv-python-headless numpy pandas matplotlib \
+            scikit-learn evo pyyaml
 ```
 
-Available sequence types and their ground truth coverage:
+Use `opencv-python-headless` (not `opencv-python`) to avoid Qt conflicts with Pangolin.
 
-| Type | Sequences | Ground truth |
-|---|---|---|
-| traj | traj1–traj6 (~1.3–1.6 GB) | Full trajectory |
-| corridor | corridor1–corridor5 (~1–3.7 GB) | Start and end segments |
-| magistrale | magistrale1–magistrale6 (~5.4–9.6 GB) | Start and end segments |
-| outdoors | outdoors1–outdoors8 (~8.4–19 GB) | Start and end segments |
-| slides | slides1–slides3 (~2.9–4.2 GB) | Start and end segments |
+### 3. Download TUM-VI sequences
 
-The **traj** sequences are recommended for benchmarking since they have ground truth for the entire trajectory. Use 1024x1024 versions (swap `512_16` for `1024_16` in URLs) for higher resolution at ~3x the file size.
+```bash
+mkdir -p data/TUM_original && cd data/TUM_original
+wget https://vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-room1_512_16.tar
+wget https://vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-room2_512_16.tar
+tar xf dataset-room1_512_16.tar && tar xf dataset-room2_512_16.tar
+cd ../..
+```
+
+Copy timestamps and IMU files from ORB-SLAM3:
+
+```bash
+cp -r ORB_SLAM3/Examples/Stereo-Inertial/TUM_TimeStamps data/TUM_original/
+cp -r ORB_SLAM3/Examples/Stereo-Inertial/TUM_IMU       data/TUM_original/
+```
+
+---
+
+## Phase 1 — Degradation Sweep
+
+### Step 1: Run clean baselines (stereo + mono)
+
+```bash
+python run_pipeline.py --config experiments/clean.yaml
+```
+
+Produces `results/clean/<traj>/clean/stereo/` and `clean/mono/` for each trajectory.
+The mono trajectory ATE becomes the switching threshold for that sequence.
+
+### Step 2: Run degradation sweeps
+
+```bash
+python run_pipeline.py --config experiments/blur_sweep_B.yaml
+python run_pipeline.py --config experiments/motion_blur_sweep.yaml
+python run_pipeline.py --config experiments/snp_sweep.yaml
+python run_pipeline.py --config experiments/brightness_sweep.yaml
+python run_pipeline.py --config experiments/occlusion_sweep.yaml
+```
+
+Each sweep applies degradation to the right camera only, across increasing severity levels.
+Once a condition causes tracking failure, subsequent conditions are auto-skipped.
+
+### Step 3: Generate analysis plots
+
+```bash
+python analysis/phase1_analysis.py
+```
+
+Outputs 6 PNGs to `analysis/`: one per degradation type + a combined 5-panel figure.
+
+---
+
+## Phase 2 — Health Monitor Training
+
+### Step 4: Build dataset index
+
+```bash
+python health_monitor/build_dataset_index.py \
+    --baseline clean \
+    --experiments blur_sweep_B motion_blur_sweep snp_sweep brightness_sweep occlusion_sweep \
+    --skip-failed
+```
+
+Reads SLAM results, computes per-window RTE, and writes severity labels to
+`data/health_monitor_dataset/sequence/<traj>/degradations/<cond>/dataset.csv`.
+Images are **not** copied — the dataset loader reads them from the original TUM directories.
+
+Inspect the severity distribution:
+
+```bash
+python health_monitor/analyze_dataset.py
+```
+
+### Step 5: Train the model
+
+```bash
+# Quick sanity check (100 windows, ~1 min)
+python health_monitor/train.py --quick
+
+# Full training (30 epochs, ~2–4 hours on GPU)
+python health_monitor/train.py
+```
+
+Outputs saved to:
+- `checkpoints/best_model.pt` — best validation checkpoint
+- `health_monitor/training_curves.png` — loss / MAE / crossover accuracy vs epoch
+- `health_monitor/val_predictions.png` — scatter and distribution histogram
+
+### Step 6: Sanity check
+
+```bash
+python analysis/model_sanity_check.py
+```
+
+Probes the trained model on 65 windows across 13 known conditions (5 per condition).
+Outputs per-window filmstrip PNGs and a crossover classification summary figure to
+`analysis/`. Prints MAE and crossover accuracy to stdout.
+
+---
+
+## Model Architecture
+
+```
+Per frame (left + right):
+  left_img, right_img → ResNet18 (shared, layer4 unfrozen) → left_emb, right_emb (512-d each)
+  diff_emb = left_emb - right_emb          ← captures left-right asymmetry
+  frame_emb = Linear(1536 → 128)([left, right, diff])
+
+Sequence (20 frames):
+  frame_embs (20 × 128) → GRU(hidden=64) → last hidden state (64-d)
+
+Output:
+  Linear(64→32) → ReLU → Dropout(0.3) → Linear(32→1) → Sigmoid → severity ∈ [0, 1]
+
+Total params: ~11.2M  |  Trainable: layer4 + head
+```
+
+**Training details:** Huber loss (δ=0.1), Adam (backbone LR 1e-5, head LR 1e-3),
+ReduceLROnPlateau, 30 epochs, batch 16, weighted random sampler (4 severity bins),
+10,830 windows from traj1 + traj2.
+
+---
+
+## Key Results
+
+| Metric | Value |
+|---|---|
+| Val MAE | 0.135 |
+| Crossover accuracy (val set) | ~75% |
+| Crossover accuracy (sanity check, 65 windows) | 80% |
+| Gaussian blur failure cliff | σ = 6.1 (room1), σ = 6.0 (room2) |
+| Motion blur failure cliff | 28 px (room1), 27 px (room2) |
+| S&P / Occlusion pattern | Flat ATE → binary cliff (RANSAC absorbs corruption) |
+| Brightness asymmetry | Overexposure benign; underexposure (α < 0.03) catastrophic |
+
+---
+
+## Experiment YAML Format
+
+```yaml
+name: blur_sweep_B
+seed: 42
+timeout: 600
+
+sequences:
+  traj1: data/TUM_original/dataset-room1_512_16
+  traj2: data/TUM_original/dataset-room2_512_16
+
+conditions:
+  blur_lv1:
+    type: gaussian_blur
+    kernel_size: 3
+    sigma: 0.5
+  blur_lv2:
+    type: gaussian_blur
+    kernel_size: 7
+    sigma: 1.0
+
+slam_modes:
+  - stereo    # degradation sweeps: stereo only
+              # clean.yaml includes both stereo and mono
+```
+
+Supported degradation types: `gaussian_blur`, `motion_blur`, `salt_and_pepper`,
+`brightness`, `occlusion`.
